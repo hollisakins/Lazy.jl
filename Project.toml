@@ -1,0 +1,13 @@
+name = "FITz"
+uuid = "96c49960-8378-4ad0-a9df-297e9ffd4de5"
+authors = ["Hollis Akins"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.6.7"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
