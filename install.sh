@@ -47,7 +47,7 @@ else
 fi
 
 echo "Installing Lazy.jl..."
-julia --project=@lazy -e 'using Pkg; Pkg.rm("Lazy"); Pkg.develop(path=".")'
+julia --project=@lazy -e 'using Pkg; Pkg.rm("Lazy") catch; "" end; Pkg.develop(path=".")'
 if [ $? -eq 0 ]; then
     echo "✓ Successfully installed Lazy.jl"
 else
