@@ -9,7 +9,7 @@
 
 ## Installation 
 
-Make sure you have `julia` installed. I recommend [juliaup](https://github.com/JuliaLang/juliaup). 
+Make sure you have `julia` installed. I recommend [juliaup](https://julialang.org/install/). 
 
 ```
 git clone https://github.com/hollisakins/Lazy.jl.git

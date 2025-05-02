@@ -10,6 +10,7 @@
 # SPDX-License-Identifier: MIT
 export JULIA_LOAD_PATH="@lazy"
 
+threads=1
 for arg in "$@"; do
     if [ "$arg" = "-t" ] || [ "$arg" = "--threads" ]; then
         shift 
