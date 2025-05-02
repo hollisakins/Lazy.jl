@@ -1,0 +1,22 @@
+#!/bin/sh
+
+# A simple driver script for invoking Runic's main function. Put this script
+# somewhere in PATH and make sure it is executable. The script expects Runic to
+# be installed in the `@runic` shared environment and julia to be available in
+# PATH. See installation instructions in the repository README for more
+# details.
+#
+# Repository: https://github.com/fredrikekre/Runic.jl
+# SPDX-License-Identifier: MIT
+export JULIA_LOAD_PATH="@lazy"
+
+for arg in "$@"; do
+    if [ "$arg" = "-t" ] || [ "$arg" = "--threads" ]; then
+        shift 
+        threads="$1"
+        shift
+    fi
+done
+
+# TODO check julia version? 
+julia -t $threads --project=@lazy -m Lazy "$@"
