@@ -1,1 +1,0 @@
-using Lazy; Lazy.comonicon_install()
