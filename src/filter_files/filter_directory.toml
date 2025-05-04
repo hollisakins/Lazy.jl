@@ -1,0 +1,244 @@
+# Filter Directory 
+## This file contains information for each filter/bandpass accessible to BRISKET, 
+## including the description/source of the transmission curve, the units of the wavelength
+## axis, and the list of nicknames used to reference this filter curve.
+
+['jwst/nircam/f070w']
+description = 'JWST NIRCam F070W downloaded from SVO filter profile service'
+nicknames = ['f070w','F070W','f070','F070','NIRCam_F070W','nircam_f070w','jwst_nircam_f070w','JWST_NIRCam_F070W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f090w']
+description = 'JWST NIRCam F090W downloaded from SVO filter profile service'
+nicknames = ['f090w','F090W','f090','F090','NIRCam_F090W','nircam_f090w','jwst_nircam_f090w','JWST_NIRCam_F090W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f115w']
+description = 'JWST NIRCam F115W downloaded from SVO filter profile service'
+nicknames = ['f115w','F115W','f115','F115','NIRCam_F115W','nircam_f115w','jwst_nircam_f115w','JWST_NIRCam_F115W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f150w']
+description = 'JWST NIRCam F150W downloaded from SVO filter profile service'
+nicknames = ['f150w','F150W','f150','F150','NIRCam_F150W','nircam_f150w','jwst_nircam_f150w','JWST_NIRCam_F150W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f200w']
+description = 'JWST NIRCam F200W downloaded from SVO filter profile service'
+nicknames = ['f200w','F200W','f200','F200','NIRCam_F200W','nircam_f200w','jwst_nircam_f200w','JWST_NIRCam_F200W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f277w']
+description = 'JWST NIRCam F277W downloaded from SVO filter profile service'
+nicknames = ['f277w','F277W','f277','F277','NIRCam_F277W','nircam_f277w','jwst_nircam_f277w','JWST_NIRCam_F277W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f356w']
+description = 'JWST NIRCam F356W downloaded from SVO filter profile service'
+nicknames = ['f356w','F356W','f356','F356','NIRCam_F356W','nircam_f356w','jwst_nircam_f356w','JWST_NIRCam_F356W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f444w']
+description = 'JWST NIRCam F444W downloaded from SVO filter profile service'
+nicknames = ['f444w','F444W','f444','F444','NIRCam_F444W','nircam_f444w','jwst_nircam_f444w','JWST_NIRCam_F444W']
+wav_units = 'angstrom'
+
+['jwst/nircam/f140m']
+description = 'JWST NIRCam F140M downloaded from SVO filter profile service'
+nicknames = ['f140m','F140M','NIRCam_F140M','nircam_f140m','jwst_nircam_f140m','JWST_NIRCam_F140M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f162m']
+description = 'JWST NIRCam F162M downloaded from SVO filter profile service'
+nicknames = ['f162m','F162M','NIRCam_F162M','nircam_f162m','jwst_nircam_f162m','JWST_NIRCam_F162M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f182m']
+description = 'JWST NIRCam F182M downloaded from SVO filter profile service'
+nicknames = ['f182m','F182M','NIRCam_F182M','nircam_f182m','jwst_nircam_f182m','JWST_NIRCam_F182M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f210m']
+description = 'JWST NIRCam F210M downloaded from SVO filter profile service'
+nicknames = ['f210m','F210M','NIRCam_F210M','nircam_f210m','jwst_nircam_f210m','JWST_NIRCam_F210M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f250m']
+description = 'JWST NIRCam F250M downloaded from SVO filter profile service'
+nicknames = ['f250m','F250M','NIRCam_F250M','nircam_f250m','jwst_nircam_f250m','JWST_NIRCam_F250M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f300m']
+description = 'JWST NIRCam F300M downloaded from SVO filter profile service'
+nicknames = ['f300m','F300M','NIRCam_F300M','nircam_f300m','jwst_nircam_f300m','JWST_NIRCam_F300M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f335m']
+description = 'JWST NIRCam F335M downloaded from SVO filter profile service'
+nicknames = ['f335m','F335M','NIRCam_F335M','nircam_f335m','jwst_nircam_f335m','JWST_NIRCam_F335M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f360m']
+description = 'JWST NIRCam F360M downloaded from SVO filter profile service'
+nicknames = ['f360m','F360M','NIRCam_F360M','nircam_f360m','jwst_nircam_f360m','JWST_NIRCam_F360M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f410m']
+description = 'JWST NIRCam F410M downloaded from SVO filter profile service'
+nicknames = ['f410m','F410M','NIRCam_F410M','nircam_f410m','jwst_nircam_f410m','JWST_NIRCam_F410M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f430m']
+description = 'JWST NIRCam F430M downloaded from SVO filter profile service'
+nicknames = ['f430m','F430M','NIRCam_F430M','nircam_f430m','jwst_nircam_f430m','JWST_NIRCam_F430M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f460m']
+description = 'JWST NIRCam F460M downloaded from SVO filter profile service'
+nicknames = ['f460m','F460M','NIRCam_F460M','nircam_f460m','jwst_nircam_f460m','JWST_NIRCam_F460M']
+wav_units = 'angstrom'
+
+['jwst/nircam/f480m']
+description = 'JWST NIRCam F480M downloaded from SVO filter profile service'
+nicknames = ['f480m','F480M','NIRCam_F480M','nircam_f480m','jwst_nircam_f480m','JWST_NIRCam_F480M']
+wav_units = 'angstrom'
+
+['jwst/miri/f560w']
+description = 'JWST MIRI F560W downloaded from SVO filter profile service'
+nicknames = ['f560w','F560W','MIRI_F560W','miri_f560w','jwst_miri_f560w','JWST_MIRI_F560W']
+wav_units = 'angstrom'
+
+['jwst/miri/f770w']
+description = 'JWST MIRI F770W downloaded from SVO filter profile service'
+nicknames = ['f770w','F770W','MIRI_F770W','miri_f770w','jwst_miri_f770w','JWST_MIRI_F770W']
+wav_units = 'angstrom'
+
+['jwst/miri/f1000w']
+description = 'JWST MIRI F1000W downloaded from SVO filter profile service'
+nicknames = ['f1000w','F1000W','MIRI_F1000W','miri_f1000w','jwst_miri_f1000w','JWST_MIRI_F1000W']
+wav_units = 'angstrom'
+
+['jwst/miri/f1130w']
+description = 'JWST MIRI F1130W downloaded from SVO filter profile service'
+nicknames = ['f1130w','F1130W','MIRI_F1130W','miri_f1130w','jwst_miri_f1130w','JWST_MIRI_F1130W']
+wav_units = 'angstrom'
+
+['jwst/miri/f1280w']
+description = 'JWST MIRI F1280W downloaded from SVO filter profile service'
+nicknames = ['f1280w','F1280W','MIRI_F1280W','miri_f1280w','jwst_miri_f1280w','JWST_MIRI_F1280W']
+wav_units = 'angstrom'
+
+['jwst/miri/f1500w']
+description = 'JWST MIRI F1500W downloaded from SVO filter profile service'
+nicknames = ['f1500w','F1500W','MIRI_F1500W','miri_f1500w','jwst_miri_f1500w','JWST_MIRI_F1500W']
+wav_units = 'angstrom'
+
+['jwst/miri/f1800w']
+description = 'JWST MIRI F1800W downloaded from SVO filter profile service'
+nicknames = ['f1800w','F1800W','MIRI_F1800W','miri_f1800w','jwst_miri_f1800w','JWST_MIRI_F1800W']
+wav_units = 'angstrom'
+
+['jwst/miri/f2100w']
+description = 'JWST MIRI F2100W downloaded from SVO filter profile service'
+nicknames = ['f2100w','F2100W','MIRI_F2100W','miri_f2100w','jwst_miri_f2100w','JWST_MIRI_F2100W']
+wav_units = 'angstrom'
+
+['jwst/miri/f2550w']
+description = 'JWST MIRI F2550W downloaded from SVO filter profile service'
+nicknames = ['f2550w','F2550W','MIRI_F2550W','miri_f2550w','jwst_miri_f2550w','JWST_MIRI_F2550W']
+wav_units = 'angstrom'
+
+['subaru/hsc/g']
+description = 'Subaru HSC g downloaded from SVO filter profile service'
+nicknames = ['HSC-g','hsc-g','HSC_g','hsc_g','subaru_hsc_g','subaru-hsc-g']
+wav_units = 'angstrom'
+
+['subaru/hsc/r']
+description = 'Subaru HSC r downloaded from SVO filter profile service'
+nicknames = ['HSC-r','hsc-r','HSC_r','hsc_r','subaru_hsc_r','subaru-hsc-r']
+wav_units = 'angstrom'
+
+['subaru/hsc/i']
+description = 'Subaru HSC i downloaded from SVO filter profile service'
+nicknames = ['HSC-i','hsc-i','HSC_i','hsc_i','subaru_hsc_i','subaru-hsc-i']
+wav_units = 'angstrom'
+
+['subaru/hsc/z']
+description = 'Subaru HSC z downloaded from SVO filter profile service'
+nicknames = ['HSC-z','hsc-z','HSC_z','hsc_z','subaru_hsc_z','subaru-hsc-z']
+wav_units = 'angstrom'
+
+['subaru/hsc/y']
+description = 'Subaru HSC y downloaded from SVO filter profile service'
+nicknames = ['HSC-y','hsc-y','HSC_y','hsc_y','subaru_hsc_y','subaru-hsc-y']
+wav_units = 'angstrom'
+
+['uvista/Y']
+description = 'UltraVISTA Y downloaded from SVO filter profile service'
+nicknames = ['UVISTA-Y','uvista-Y','UVISTA_Y','uvista_Y','ultravista-Y','ultravista_Y', 'UltraVISTA-Y', 'UltraVISTA_Y']
+wav_units = 'angstrom'
+
+['uvista/J']
+description = 'UltraVISTA J downloaded from SVO filter profile service'
+nicknames = ['UVISTA-J','uvista-J','UVISTA_J','uvista_J','ultravista-J','ultravista_J', 'UltraVISTA-J', 'UltraVISTA_J']
+wav_units = 'angstrom'
+
+['uvista/H']
+description = 'UltraVISTA H downloaded from SVO filter profile service'
+nicknames = ['UVISTA-H','uvista-H','UVISTA_H','uvista_H','ultravista-H','ultravista_H', 'UltraVISTA-H', 'UltraVISTA_H']
+wav_units = 'angstrom'
+
+['uvista/Ks']
+description = 'UltraVISTA Ks downloaded from SVO filter profile service'
+nicknames = ['UVISTA-Ks','uvista-Ks','UVISTA_Ks','uvista_Ks','ultravista-Ks','ultravista_Ks', 'UltraVISTA-Ks', 'UltraVISTA_Ks']
+wav_units = 'angstrom'
+
+['hst/acs/f435w']
+description = 'HST ACS F435W downloaded from SVO filter profile service'
+nicknames = ['f435w','F435W','HST_F435W','hst_f435w','HST-F435W','hst-f435w', 'HST_ACS_F435W', 'hst_acs_f435w', 'HST-ACS-F435W', 'hst-acs-f435w']
+wav_units = 'angstrom'
+
+['hst/acs/f606w']
+description = 'HST ACS F606W downloaded from SVO filter profile service'
+nicknames = ['f606w','F606W','HST_F606W','hst_f606w','HST-F606W','hst-f606w', 'HST_ACS_F606W', 'hst_acs_f606w', 'HST-ACS-F606W', 'hst-acs-f606w']
+wav_units = 'angstrom'
+
+['hst/acs/f775w']
+description = 'HST ACS F775W downloaded from SVO filter profile service'
+nicknames = ['f775w','F775W','HST_F775W','hst_f775w','HST-F775W','hst-f775w', 'HST_ACS_F775W', 'hst_acs_f775w', 'HST-ACS-F775W', 'hst-acs-f775w']
+wav_units = 'angstrom'
+
+['hst/acs/f814w']
+description = 'HST ACS F814W downloaded from SVO filter profile service'
+nicknames = ['f814w','F814W','HST_F814W','hst_f814w','HST-F814W','hst-f814w', 'HST_ACS_F814W', 'hst_acs_f814w', 'HST-ACS-F814W', 'hst-acs-f814w']
+wav_units = 'angstrom'
+
+['hst/acs/f850lp']
+description = 'HST ACS F850LP downloaded from SVO filter profile service'
+nicknames = ['f850l','f850lp','F850L','F850LP','HST_F850L','HST_F850LP','hst_f850l','hst_f850lp','HST-F850L','HST-F850LP','hst-f850l','hst-f850lp', 'HST_ACS_F850L', 'hst_acs_f850l', 'HST-ACS-F850L', 'hst-acs-f850l','HST_ACS_F850LP', 'hst_acs_f850lp', 'HST-ACS-F850LP', 'hst-acs-f850lp']
+wav_units = 'angstrom'
+
+['hst/wfc3/f105w']
+description = 'HST WFC3 F105W downloaded from SVO filter profile service'
+nicknames = ['f105w','F105W','HST_F105W','hst_f105w','HST-F105W','hst-f105w', 'HST_WFC3_F105W', 'hst_wfc3_f105w', 'HST-WFC3-F105W', 'hst-wfc3-f105w']
+wav_units = 'angstrom'
+
+['hst/wfc3/f125w']
+description = 'HST WFC3 F125W downloaded from SVO filter profile service'
+nicknames = ['f125w','F125W','HST_F125W','hst_f125w','HST-F125W','hst-f125w', 'HST_WFC3_F125W', 'hst_wfc3_f125w', 'HST-WFC3-F125W', 'hst-wfc3-f125w']
+wav_units = 'angstrom'
+
+['hst/wfc3/f140w']
+description = 'HST WFC3 F140W downloaded from SVO filter profile service'
+nicknames = ['f140w','F140W','HST_F140W','hst_f140w','HST-F140W','hst-f140w', 'HST_WFC3_F140W', 'hst_wfc3_f140w', 'HST-WFC3-F140W', 'hst-wfc3-f140w']
+wav_units = 'angstrom'
+
+['hst/wfc3/f160w']
+description = 'HST WFC3 F160W downloaded from SVO filter profile service'
+nicknames = ['f160w','F160W','HST_F160W','hst_f160w','HST-F160W','hst-f160w', 'HST_WFC3_F160W', 'hst_wfc3_f160w', 'HST-WFC3-F160W', 'hst-wfc3-f160w']
+wav_units = 'angstrom'
+
+['euclid/VIS']
+description = 'Euclid VIS.vis downloaded from SVO filter profile service'
+nicknames = ['vis','VIS','Euclid_VIS','euclid_vis','euclid_VIS','Euclid_vis']
+wav_units = 'angstrom'

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # A simple driver script for invoking Runic's main function. Put this script
 # somewhere in PATH and make sure it is executable. The script expects Runic to
@@ -10,14 +10,35 @@
 # SPDX-License-Identifier: MIT
 export JULIA_LOAD_PATH="@lazy"
 
-threads=1
-for arg in "$@"; do
-    if [ "$arg" = "-t" ] || [ "$arg" = "--threads" ]; then
-        shift 
-        threads="$1"
-        shift
-    fi
+args=()
+cmd=$1
+if [ -z "$cmd" ]; then
+    echo "Usage: $0 <command> [args]" >&2
+    echo "Available commands: fit, list-templates, list-filters" >&2
+    exit 1
+fi
+# Skip past the command
+args+=("$cmd")
+shift 
+
+nthreads=1  # Default number of threads
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -t|--threads)
+            shift
+            if [ -n "$1" ] && [ "$1" -eq "$1" ] 2>/dev/null; then
+                nthreads="$1"
+                shift
+            else
+                echo "Error: -t|--threads requires a numeric argument" >&2
+                exit 1
+            fi
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
 done
 
-# TODO check julia version? 
-julia -t $threads --project=@lazy -m Lazy "$@"
+julia -t $nthreads --project=@lazy -m Lazy "${args[@]}"

@@ -1,3 +1,6 @@
+errno::Cint = 0
+supports_color(io) = get(io, :color, false)
+
 using TOML
 using FITSIO
 using NonNegLeastSquares, Glob
@@ -8,21 +11,22 @@ using Trapz
 using LinearAlgebra
 using Base.Threads
 using HDF5
-using Comonicon
-version = "0.1.0"
-filterpath = @__DIR__() * "/filter_files/"
+
 igmpath = @__DIR__() * "/igm_data/"
 templatepath = @__DIR__() * "/templates/"
+template_directory = TOML.parsefile(templatepath * "template_directory.toml")
+template_set_names = sort(collect(keys(template_directory)))
 
-"""
-Fit photometric redshifts with Lazy.jl
+filterpath = @__DIR__() * "/filter_files/"
+filter_directory = TOML.parsefile(filterpath * "filter_directory.toml")
+filter_nicknames = Dict{String, String}()
+filter_names = sort(collect(keys(filter_directory)))
 
-# Args
-
-- `param_file`: path to TOML parameter file
-
-"""
-
+for key in filter_names
+    for n in filter_directory[key]["nicknames"]
+        filter_nicknames[n] = key
+    end
+end
 
 function panic(
     msg::String, err::Union{Exception, Nothing} = nothing,
@@ -41,47 +45,89 @@ function panic(
     return errno
 end
 
-function print_help(io)
+function print_help(io, cmd::String = "main")
     printstyled(io, "Lazy.jl \n", bold = true)
-    println("Usage: lazy -p <param_file> [-o <output_file>]")
-    println("Options:")
-    println("  -p, --param   Path to the parameter file")
-    println("  -o, --output  Path to the output file")
+    if cmd == "main"
+        println("usage: lazy <command> <options>")
+        println("")
+        println("  fit <options>       Fit the data")
+        println("  list-templates      List the available templates")
+        println("  list-filters        List the available filters")
+    elseif cmd == "fit"
+        println("usage: lazy fit -p <param_file>")
+        println("")
+        println("  -p, --param   Path to the parameter file")
+    elseif cmd == "list-templates"
+        println("usage: lazy list-templates")
+    end
+
 end
 
 function print_ascii(io)
+    nthreads = Threads.nthreads()
     println("     __                        _ __ ")
     println("    / /  ____ _____ __  __    (_) / ")
     println("   / /  / __ `/_  // / / /   / / /  ")
     println("  / /__/ /_/ / / // /_/ /   / / /   ")
     println(" /_____|__,_/ /___|__, (_)_/ /_/    ")
     println("                 /____/ /___/       ")
-    println("v$version")
+    println("v$version ($nthreads threads)       ")
     println("====================================")
 end
 
-function main(argv)::Cint
+function main(argv)
+
+    # Reset errno
+    global errno = 0
     
     io = stdout
     print_ascii(io)
 
     if argv == []
         print_help(io)
-        return 1
+        return errno
     end
 
     # Parse command line arguments
-    param = nothing
     while length(argv) > 0
         x = popfirst!(argv)
+        
+        # Return the help message and exit
         if x == "-h" || x == "--help"
             print_help(io)
-            return 1
-        elseif x == "-p" || x == "--param"
-            if length(argv) < 1
-                return panic("expected parameter file argument after `-p`")
+            return errno
+        
+        # 
+        elseif x == "fit"
+            if argv == []
+                print_help(io, "fit")
+                return errno
             end
-            param = popfirst!(argv)
+        
+            y = popfirst!(argv)
+
+            if y == "-p" || y == "--param"
+                if length(argv) < 1
+                    return panic("expected parameter file argument after `-p`")
+                end
+                param = popfirst!(argv)
+                return fit(param)
+            elseif y == "-h" || y == "--help"
+                print_help(io, "fit")
+                return errno
+            else
+                return panic("unrecognized argument: $y")
+            end
+
+
+        elseif x == "list-templates"
+            # List the available templates
+            return list_templates()
+
+        elseif x == "list-filters"
+            # List the available templates
+            return list_filters()
+            
         else
             # Argument not recognized
             return panic("unrecognized argument: $x")
@@ -90,6 +136,10 @@ function main(argv)::Cint
     if param == nothing
         return panic("parameter file not specified. Use -p <param_file>")
     end
+
+end
+
+function fit(param)
 
     # Load in TOML parameter file
     if !isfile(param)
@@ -113,11 +163,34 @@ function main(argv)::Cint
         else
             panic("parameter `input_catalog` not found in the parameter file.")
         end
+        if haskey(io, "output_dir")
+            output_dir = io["output_dir"]
+        else
+            panic("parameter `output_dir` not found in the parameter file.")
+        end
+        if haskey(io, "output_name")
+            output_name = io["output_name"]
+        else
+            panic("parameter `output_name` not found in the parameter file.")
+        end
+        output_catalog = output_dir * "/" * output_name * ".fits"
+        if haskey(io, "output_pz")
+            output_pz = io["output_pz"]
+        else
+            output_pz = false
+        end
+        if haskey(io, "output_templates")
+            output_templ = io["output_templates"]
+        else
+            output_templ = false
+        end
+        output_catalog_pz = output_dir * "/" * output_name * "_pz.fits"
+        output_catalog_templ = output_dir * "/" * output_name * "_templ.fits"
     else
         panic("section `io` not found in the parameter file.")
     end
 
-    IDs = read(cat[2], "ID")
+    IDs = Int.(read(cat[2], "ID"))
     nobj = length(IDs)
     println("nobj = $nobj")
         
@@ -131,14 +204,6 @@ function main(argv)::Cint
     nband = length(bands)
     println("nband = $nband")
     println("bands = $bands")
-
-    # Check that all bands exist as valid filter files
-    for band in bands
-        filterfile = filterpath * band * ".dat"
-        if !isfile(filterfile)
-            panic("Filter file $filterfile does not exist.")
-        end
-    end
 
     # Load in the data
     fnu, efnu = load_data(cat, bands, translate)
@@ -186,10 +251,13 @@ function main(argv)::Cint
     println("====================================")
 
     if !haskey(fitting, "template_set")
-        error("parameter `template_set` not found in the parameter file.")
+        panic("parameter `template_set` not found in the parameter file.")
     end
 
     template_set = fitting["template_set"]
+    if !haskey(template_directory, template_set)
+        panic("Template set $template_set not found in the template directory.")
+    end
     println("Template set: $template_set")
  
     templates = glob("*", templatepath * template_set)
@@ -206,7 +274,8 @@ function main(argv)::Cint
                 error("Template $i: $templ has different number of rows than the first template.")
             end
         end
-        println("Template $i: $templ $s")
+        templ_shortname = basename(templ)
+        println("Template $i: $templ_shortname ($s,)")
         
     end
     
@@ -226,48 +295,45 @@ function main(argv)::Cint
         error("parameter `igm` not found in the parameter file.")
     end
     
-    h5open(igmpath * fitting["igm"] * ".hdf5", "r") do igm_file
-        igm_redshifts = igm_file["redshifts"][:]
-        igm_wavelengths = igm_file["wavelengths"][:]
-        igm_transmission = igm_file["transmission"][:,:]
-        
+    igm_file = h5open(igmpath * fitting["igm"] * ".hdf5", "r")
+    igm_redshifts = igm_file["redshifts"][:]
+    igm_wavelengths = igm_file["wavelengths"][:]
+    igm_transmission = igm_file["transmission"][:,:]
+    close(igm_file)
+    idx  = searchsortedfirst(templwav, 1215.67)
+    idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
 
-        iter = ProgressBar(1:ntempl)
-        for i in iter
-            @threads for j in 1:nz
-                z = zgrid[j]
+    iter = ProgressBar(1:ntempl)
+    for i in iter
+        @threads for j in 1:nz
+            z = zgrid[j]
 
-                templfnu_i = templfnu[:, i]
-                wav_obs = templwav .* (1+z)
+            templfnu_i = templfnu[:, i]
+            wav_obs = templwav .* (1+z)
+            
+            # Interpolate the IGM transmission at this redshift
+            # first interpolate over the redshift
+            iz_up = searchsortedfirst(igm_redshifts, z)
+            transmission = igm_transmission[iz_up,:]
+
+            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
+            y1 = interp(templwav[1:idx-1])
+            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
+            y2 = interp(templwav[idx:end])
+            transmission  = [y1; y2]
+
+            templfnu_i = templfnu_i .* transmission
+            
+            @threads for k in 1:nband
                 
-                # Interpolate the IGM transmission at this redshift
-                # first interpolate over the redshift
-                iz_up = searchsortedfirst(igm_redshifts, z)
-                transmission = igm_transmission[iz_up,:]
-
-                idx  = searchsortedfirst(templwav, 1215.67)
-                idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
-                interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
-                y1 = interp(templwav[1:idx-1])
-                interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
-                y2 = interp(templwav[idx:end])
-                transmission  = [y1; y2]
-
-                templfnu_i = templfnu_i .* transmission
-                
-                for k in 1:nband
-                    
-                    band = bands[k]
-                    filt = readdlm(filterpath * band * ".dat")
-                    fwav = filt[:,1]
-                    ftrans = filt[:,2]
-                    nu = 1 ./ fwav
-                    interp = linear_interpolation(wav_obs, templfnu_i)
-                    fnu_interp = interp(fwav)
-                
-                    result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
-                    templgrid[i,j,k] = result
-                end
+                band = bands[k]
+                fwav, ftrans = get_filter(band)
+                nu = 1 ./ fwav
+                interp = linear_interpolation(wav_obs, templfnu_i)
+                fnu_interp = interp(fwav)
+            
+                result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
+                templgrid[i,j,k] = result
             end
         end
     end
@@ -284,7 +350,7 @@ function main(argv)::Cint
     template_error_scale = fitting["template_error_scale"]
     println("Template error: $template_error")
 
-    tef = readdlm(template_error * ".dat")
+    tef = readdlm(templatepath * "template_error/" * template_error * ".dat")
     tef_x = tef[:,1]
     tef_y = tef[:,2]
     tef_xmin = minimum(tef_x[tef_y .> 0])
@@ -293,29 +359,20 @@ function main(argv)::Cint
     tef_clip_max = tef_y[tef_y .> 0][end]
     println("TEF x range: $tef_xmin - $tef_xmax")
     println("TEF y range: $tef_clip_min - $tef_clip_max")
+    pivot_wavs = get_pivot_wavelengths(bands)
 
     
-
-    # Compute pivot wavelengths
-    pivot_wavs = zeros(nband)
-    for k in 1:nband
-        band = bands[k]
-        filt = readdlm(filterpath * band * ".dat")
-        fwav = filt[:,1]
-        ftrans = filt[:,2]
-        pivot_wavs[k] = sqrt(trapz(fwav, ftrans) / trapz(fwav, ftrans ./ (fwav .^ 2)))
-    end
 
     println("===========================")
     println("Fitting by redshift ")
     
     chi2grid = zeros(nobj,nz)
+    coeffs = zeros(nobj,nz,ntempl)
     
     iter = ProgressBar(1:nz)
     for i in iter
         
         templgrid_i = templgrid[:,i,:]
-        chi2 = zeros(nobj)
 
         pivot_wavs_rest = pivot_wavs ./ (1+zgrid[i])
         tef_interp = linear_interpolation(tef_x, tef_y, extrapolation_bc=Flat())
@@ -329,33 +386,106 @@ function main(argv)::Cint
             efnu_j = efnu[j,:]
             efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
             snr_j = fnu_j ./ efnu_tot_j
-            
-            #good = ~np.isnan(fnu_i) & ~np.isnan(efnu_tot_i)
+
+            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j)
+            detect = valid .& (snr_j .> 2.0)
+            if sum(detect) < nphot_min
+                chi2[j] = 1e10
+                continue
+            end
 
             templgrid_ij = transpose(templgrid_i) ./ efnu_tot_j
             
-            result = nonneg_lsq(templgrid_ij, snr_j ; alg=:nnls)[:]
-            # println("Result: " * summary(result))
+            result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
+            coeffs[j,i,:] = result
 
-            fnu_mod_j = sum(result .* templgrid_i, dims=1)[:]
-            chi2[j] = sum(((fnu_j .- fnu_mod_j) .^ 2) ./ efnu_tot_j .^ 2)
+            # fnu_mod_j = sum(result .* templgrid_i, dims=1)[:]
+            fnu_mod_j = transpose(templgrid_i) * result # order is important here
+            chi2grid[j,i] = sum(((fnu_j .- fnu_mod_j) .^ 2) ./ efnu_tot_j .^ 2)
             
         end
 
-        chi2grid[:,i] = chi2
-
     end
     
-    zbest = zgrid[map(argmin, eachrow(chi2grid))]
+    println("Collecting results")
+    pz = exp.(-0.5*chi2grid)
+    cpz = cumsum(pz, dims=2) ./ sum(pz, dims=2)
+    z_l95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.025)))]
+    z_l68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.160)))]
+    z_med = zgrid[map(argmin, eachrow(abs.(cpz .- 0.500)))]
+    z_u68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.840)))]
+    z_u95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.975)))]
 
+    izbest = map(argmin, eachrow(chi2grid))
+    zbest = zgrid[izbest]
+    coeffsbest = zeros(nobj,ntempl)
+    @threads for j in 1:nobj
+        coeffsbest[j,:] = coeffs[j,izbest[j],:]
+    end
+    chi2best = vec(minimum(chi2grid, dims=2))
 
-    snr = fnu ./ efnu
-    nphot = sum(snr .>= 2.0, dims=2)
-    zbest[nphot .< nphot_min] .= -1
+    println("Writing summary output to $output_catalog")
+    FITS(output_catalog, "w") do f
+        write(f, ["ID", "z_best", "chi2", "z_l95", "z_l68", "z_med", "z_u68", "z_u95"], 
+                 Any[IDs, zbest, chi2best, z_l95, z_l68, z_med, z_u68, z_u95])
+    end
 
+    if output_pz
+        println("Writing P(z) output to $output_catalog_pz")
+        temp_pz = pz ./ trapz(zgrid, pz)
+        temp_pz = vcat(transpose(zgrid), temp_pz)
+        temp_IDs = vcat([-1], IDs)
+        FITS(output_catalog_pz, "w") do f
+            write(f, Dict("ID" => temp_IDs))
+        end
+        FITS(output_catalog_pz, "r+") do f
+            write(f, temp_pz)
+        end
+    end
+
+    if output_templ
+        println("Writing template output to $output_catalog_templ")
+
+        fnu_templ = zeros(nobj, length(templwav))
+        idx  = searchsortedfirst(templwav, 1215.67)
+        idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
+
+        @threads for j in 1:nobj
+            z = zbest[j]
+            i = argmin(abs.(zgrid .- z))
+
+            wav_obs = templwav .* (1+z)
+            
+            # Interpolate the IGM transmission at this redshift
+            iz_up = searchsortedfirst(igm_redshifts, z)
+            transmission = igm_transmission[iz_up,:]
+            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
+            y1 = interp(templwav[1:idx-1])
+            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
+            y2 = interp(templwav[idx:end])
+            transmission  = [y1; y2]
+            
+            fnu_j = templfnu * coeffsbest[j,:]
+            fnu_j = fnu_j .* transmission
+            fnu_templ[j,:] = fnu_j
+
+        end
+        temp_templ = vcat(transpose(templwav), fnu_templ)
+        temp_IDs = vcat([-1], IDs)
+        temp_zbest = vcat([-1], zbest)
+        FITS(output_catalog_templ, "w") do f
+            write(f, Dict("ID" => temp_IDs, "z_best" => temp_zbest))
+        end
+        FITS(output_catalog_templ, "r+") do f
+            write(f, temp_templ)
+        end
+
+    end
+                
     
 
-    return 0
+
+    return errno
 end
 
 
@@ -401,11 +531,44 @@ function list_filters()
     """
     List the available filters in the filter_files directory.
     """
-    filter_files = glob("*.dat", filterpath)
+    # filter_files = glob("*.dat", filterpath)
     println("Available filters:")
-    for file in filter_files
-        println(file)
+
+    for filter_name in filter_names
+        filter_description = filter_directory[filter_name]["description"]
+        print(rpad(filter_name, 25))
+        println(filter_description)
+        if !isfile(filterpath * filter_name)
+            panic("Filter file $filter_name not found.")
+        end
     end
+end
+
+function get_filter(nickname)
+    """
+    Get the filter name from the nickname.
+    """
+    if haskey(filter_nicknames, nickname)
+        real_name = filter_nicknames[nickname]
+        filt = readdlm(filterpath * real_name)
+        return filt[:,1], filt[:,2]
+    else
+        return panic("Filter '$nickname' not found.")
+    end
+end
+
+function get_pivot_wavelengths(bands)
+    """
+    Compute the pivot wavelengths for the given bands.
+    """
+    nband = length(bands)
+    pivot_wavs = zeros(nband)
+    for k in 1:nband
+        band = bands[k]
+        fwav, ftrans = get_filter(band)
+        pivot_wavs[k] = sqrt(trapz(fwav, ftrans) / trapz(fwav, ftrans ./ (fwav .^ 2)))
+    end
+    return pivot_wavs
 end
 
 
@@ -413,16 +576,19 @@ function list_templates()
     """
     List the available templates in the template_set directory.
     """
-    
-    template_set = fitting["template_set"]
-    println("Template set: $template_set")
-
-    templates = glob(fitting["template_set"] * "/*")
-    println("Available templates:")
-    for templ in templates
-        println(templ)
+    println("Available template sets:")
+    for template_set_name in template_set_names
+        template_files = template_directory[template_set_name]["files"]
+        for template_file in template_files
+            if !isfile(templatepath * template_file)
+                panic("Template file $template_file not found.")
+            end
+        end
+        nfiles = length(template_files)
+        println("* $template_set_name ($nfiles)")
     end
 end
 
 
 Base.@main
+
