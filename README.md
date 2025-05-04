@@ -29,13 +29,15 @@ export PATH="$PATH:$HOME/.julia/bin"
 ```
 Then, run `source ~/.bashrc` or `source ~/.zshrc` to update your path.
 
+Note that to update your installation (e.g. after pulling new changes from the repository), you can simply run `bash install.sh` again. This will update the package and all dependencies, and recompile the package if necessary.
+
 ## Usage
 
 The `lazy` executable is a command line interface to the Lazy.jl package.
 
 ### Fitting
 
-To fit a catalog, run `lazy fit`: 
+To fit a catalog, run `lazy fit`. The first time you run this, it will precompile the package (and all dependencies), which may take a few minutes. This is normal, and will not happen again unless you update the package or change the Julia version.
 ```
 > lazy fit 
      __                        _ __
