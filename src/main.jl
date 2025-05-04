@@ -54,9 +54,9 @@ function print_help(io, cmd::String = "main")
         println("  list-templates      List the available templates")
         println("  list-filters        List the available filters")
     elseif cmd == "fit"
-        println("usage: lazy fit -p <param_file>")
         println("")
-        println("  -p, --param   Path to the parameter file")
+        println("  -p, --param     Path to the parameter file")
+        println("  -t, -- threads  Number of threads to use")
     elseif cmd == "list-templates"
         println("usage: lazy list-templates")
     end
