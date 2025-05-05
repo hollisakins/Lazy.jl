@@ -11,6 +11,9 @@ using Trapz
 using LinearAlgebra
 using Base.Threads
 using HDF5
+using PyCall
+
+
 
 igmpath = @__DIR__() * "/igm_data/"
 templatepath = @__DIR__() * "/templates/"
@@ -163,17 +166,13 @@ function fit(param)
         else
             panic("parameter `input_catalog` not found in the parameter file.")
         end
-        if haskey(io, "output_dir")
-            output_dir = io["output_dir"]
+
+        if haskey(io, "output_file")
+            output_file = io["output_file"]
         else
-            panic("parameter `output_dir` not found in the parameter file.")
+            panic("parameter `output_file` not found in the parameter file.")
         end
-        if haskey(io, "output_name")
-            output_name = io["output_name"]
-        else
-            panic("parameter `output_name` not found in the parameter file.")
-        end
-        output_catalog = output_dir * "/" * output_name * ".fits"
+
         if haskey(io, "output_pz")
             output_pz = io["output_pz"]
         else
@@ -184,8 +183,8 @@ function fit(param)
         else
             output_templ = false
         end
-        output_catalog_pz = output_dir * "/" * output_name * "_pz.fits"
-        output_catalog_templ = output_dir * "/" * output_name * "_templ.fits"
+        output_file_pz = replace(output_file, ".fits" => "_pz.fits")
+        output_file_templ = replace(output_file, ".fits" => "_templ.fits")
     else
         panic("section `io` not found in the parameter file.")
     end
@@ -390,7 +389,8 @@ function fit(param)
             valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j)
             detect = valid .& (snr_j .> 2.0)
             if sum(detect) < nphot_min
-                chi2[j] = 1e10
+                println("Object $j: not enough detections (nphot = $(sum(detect)))")
+                chi2[j] = -1
                 continue
             end
 
@@ -406,6 +406,7 @@ function fit(param)
         end
 
     end
+
     
     println("Collecting results")
     pz = exp.(-0.5*chi2grid)
@@ -415,7 +416,7 @@ function fit(param)
     z_med = zgrid[map(argmin, eachrow(abs.(cpz .- 0.500)))]
     z_u68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.840)))]
     z_u95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.975)))]
-
+    
     izbest = map(argmin, eachrow(chi2grid))
     zbest = zgrid[izbest]
     coeffsbest = zeros(nobj,ntempl)
@@ -423,28 +424,28 @@ function fit(param)
         coeffsbest[j,:] = coeffs[j,izbest[j],:]
     end
     chi2best = vec(minimum(chi2grid, dims=2))
+    
+    bad_objs = BitArray(sum(chi2grid .== -1, dims=2))
+    zbest[bad_objs] .= -1
+    chi2best[bad_objs] .= -1
 
-    println("Writing summary output to $output_catalog")
-    FITS(output_catalog, "w") do f
-        write(f, ["ID", "z_best", "chi2", "z_l95", "z_l68", "z_med", "z_u68", "z_u95"], 
-                 Any[IDs, zbest, chi2best, z_l95, z_l68, z_med, z_u68, z_u95])
-    end
+    println("Writing summary output to $output_file")
+    write_data(output_file, 
+               ["ID", "z_best", "chi2", "z_l95", "z_l68", "z_med", "z_u68", "z_u95"], 
+               Any[IDs, zbest, chi2best, z_l95, z_l68, z_med, z_u68, z_u95])
 
     if output_pz
-        println("Writing P(z) output to $output_catalog_pz")
+        println("Writing P(z) output to $output_file_pz")
         temp_pz = pz ./ trapz(zgrid, pz)
         temp_pz = vcat(transpose(zgrid), temp_pz)
         temp_IDs = vcat([-1], IDs)
-        FITS(output_catalog_pz, "w") do f
-            write(f, Dict("ID" => temp_IDs))
-        end
-        FITS(output_catalog_pz, "r+") do f
-            write(f, temp_pz)
-        end
+        write_data(output_file_pz, 
+                   ["ID", "Pz"], 
+                   Any[temp_IDs, temp_pz])
     end
 
     if output_templ
-        println("Writing template output to $output_catalog_templ")
+        println("Writing template output to $output_file_templ")
 
         fnu_templ = zeros(nobj, length(templwav))
         idx  = searchsortedfirst(templwav, 1215.67)
@@ -473,13 +474,9 @@ function fit(param)
         temp_templ = vcat(transpose(templwav), fnu_templ)
         temp_IDs = vcat([-1], IDs)
         temp_zbest = vcat([-1], zbest)
-        FITS(output_catalog_templ, "w") do f
-            write(f, Dict("ID" => temp_IDs, "z_best" => temp_zbest))
-        end
-        FITS(output_catalog_templ, "r+") do f
-            write(f, temp_templ)
-        end
-
+        write_data(output_file_templ, 
+                   ["ID", "z_best", "templ"], 
+                   Any[temp_IDs, temp_zbest, temp_templ])
     end
                 
     
@@ -488,6 +485,7 @@ function fit(param)
     return errno
 end
 
+    
 
 function load_data(cat, bands, translate)
     """
@@ -588,6 +586,9 @@ function list_templates()
         println("* $template_set_name ($nfiles)")
     end
 end
+
+
+
 
 
 Base.@main
