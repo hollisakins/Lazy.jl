@@ -73,7 +73,7 @@ Example parameter file:
 ```toml
 [io]
     input_catalog = 'example_input_catalog.fits' # Path to the input FITS catalog
-    intput_missing_data = 'nan' # Format for missing data in the input catalog (e.g. 'nan' or -99) (currently not implemented)
+    missing_data_format = 'nan' # Format for missing data in the input catalog (e.g. 'nan' or -99)
 
     output_file = 'example_lazy_output.fits' # Name of the output file (with extension)
     output_pz = true # Output the redshift probability distribution for each object

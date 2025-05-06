@@ -1,6 +1,3 @@
 /Manifest*.toml
 .vscode/
 .DS_Store
-param.toml
-template_error.dat
-zbest.txt
