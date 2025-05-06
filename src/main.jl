@@ -74,11 +74,16 @@ function print_ascii(io)
     println("  / /__/ /_/ / / // /_/ /   / / /   ")
     println(" /_____|__,_/ /___|__, (_)_/ /_/    ")
     println("                 /____/ /___/       ")
-    println("v$version ($nthreads threads)       ")
+    if nthreads > 1
+        println("v$version ($nthreads threads)")
+    else
+        println("v$version (1 thread)")
+    end
     println("====================================")
 end
 
 function main(argv)
+    check_version()
 
     # Reset errno
     global errno = 0
@@ -164,13 +169,13 @@ function fit(param)
             # Read the input catalog
             cat = FITS(input_catalog)
         else
-            panic("parameter `input_catalog` not found in the parameter file.")
+            panic("parameter `io.input_catalog` not found in the parameter file.")
         end
 
         if haskey(io, "output_file")
             output_file = io["output_file"]
         else
-            panic("parameter `output_file` not found in the parameter file.")
+            panic("parameter `io.output_file` not found in the parameter file.")
         end
 
         if haskey(io, "output_pz")
@@ -208,7 +213,30 @@ function fit(param)
     fnu, efnu = load_data(cat, bands, translate)
     println("fnu = " * summary(fnu))
     println("efnu = " * summary(efnu))
+
+    if !haskey(io, "missing_data_format")
+        panic("parameter `io.missing_data_format` not found in the parameter file.")
+    end
+    missing_data_format = io["missing_data_format"]
+    if missing_data_format == "nan" || missing_data_format == "NaN"
+        begin
+        end
+    elseif missing_data_format == "zero"
+        fnu[efnu .= 0.0] .= NaN
+        efnu[efnu .= 0.0] .= NaN
+    elseif missing_data_format isa Number
+        condition = (fnu .== missing_data_format) .| (efnu .== missing_data_format)
+        fnu[condition] .= NaN
+        efnu[condition] .= NaN
+    else
+        println("Warning: unrecognized missing data format: $missing_data_format, using input catalog as is.")
+    end
+
+        
+
+
     println("====================================")
+
     
     if !haskey(param, "fitting")
         panic("section `fitting` not found in the parameter file.")
@@ -217,24 +245,24 @@ function fit(param)
     fitting = param["fitting"]
 
     if !haskey(fitting, "nphot_min")
-        panic("parameter `nphot_min` not found in the parameter file.")
+        panic("parameter `fitting.nphot_min` not found in the parameter file.")
     end
     nphot_min = fitting["nphot_min"]
 
     if !haskey(fitting, "sys_err")
-        panic("parameter `sys_err` not found in the parameter file.")
+        panic("parameter `fitting.sys_err` not found in the parameter file.")
     end
     sys_err = fitting["sys_err"]
     fnu, efnu = set_sys_err(fnu, efnu, sys_err)
 
     if !haskey(fitting, "z_min")
-        panic("parameter `z_min` not found in the parameter file.")
+        panic("parameter `fitting.z_min` not found in the parameter file.")
     end
     if !haskey(fitting, "z_max")
-        panic("parameter `z_max` not found in the parameter file.")
+        panic("parameter `fitting.z_max` not found in the parameter file.")
     end
     if !haskey(fitting, "z_step")
-        panic("parameter `z_step` not found in the parameter file.")
+        panic("parameter `fitting.z_step` not found in the parameter file.")
     end
 
     z_min = fitting["z_min"]
@@ -389,8 +417,8 @@ function fit(param)
             valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j)
             detect = valid .& (snr_j .> 2.0)
             if sum(detect) < nphot_min
-                println("Object $j: not enough detections (nphot = $(sum(detect)))")
-                chi2[j] = -1
+                #println("Object $j: not enough detections (nphot = $(sum(detect)))")
+                chi2grid[j,i] = -1
                 continue
             end
 
@@ -425,7 +453,7 @@ function fit(param)
     end
     chi2best = vec(minimum(chi2grid, dims=2))
     
-    bad_objs = BitArray(sum(chi2grid .== -1, dims=2))
+    bad_objs = sum(chi2grid .== -1, dims=2) .== nz
     zbest[bad_objs] .= -1
     chi2best[bad_objs] .= -1
 

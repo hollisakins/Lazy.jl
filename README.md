@@ -52,14 +52,15 @@ Lazy.jl
 usage: lazy fit -p <param_file> -t <nthreads>
 
   -p, --param     Path to the parameter file
-  -t, -- threads  Number of threads to use
+  -t, --threads  Number of threads to use
 
 ```
 
 ### Multithreading 
 
 Lazy.jl takes advantage of multithreading in Julia, and will automatically use all available threads by default.
-You can specify the number of threads to use with the `-t` or `--threads` option.
+You can specify the number of threads to use with the `-t` or `--threads` option. 
+Pass `--thread auto` to automatically use the maximum number of threads available. 
 
 The key advantage of using multithreading in Julia (vs. multiprocessing in Python) is that it allows shared memory access. 
 

@@ -1,6 +1,6 @@
 name = "Lazy"
 uuid = "96c49960-8378-4ad0-a9df-297e9ffd4de5"
-version = "1.0.0-DEV"
+version = "1.0.1-DEV"
 authors = ["Hollis Akins"]
 
 [deps]
@@ -9,6 +9,7 @@ DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 FITSIO = "525bcba6-941b-5504-bd06-fd0dc1a4d2eb"
 Glob = "c27321d9-0574-5035-807b-f59d2c89b15c"
 HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NonNegLeastSquares = "b7351bd1-99d9-5c5d-8786-f205a815c4d7"
@@ -24,6 +25,7 @@ DelimitedFiles = "1.9.1"
 FITSIO = "0.17.4"
 Glob = "1.3.1"
 HDF5 = "0.17.2"
+HTTP = "1.10.16"
 Interpolations = "0.15.1"
 LinearAlgebra = "1.11.0"
 NonNegLeastSquares = "0.4.1"

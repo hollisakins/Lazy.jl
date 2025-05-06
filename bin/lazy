@@ -26,13 +26,8 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         -t|--threads)
             shift
-            if [ -n "$1" ] && [ "$1" -eq "$1" ] 2>/dev/null; then
-                nthreads="$1"
-                shift
-            else
-                echo "Error: -t|--threads requires a numeric argument" >&2
-                exit 1
-            fi
+            nthreads="$1"
+            shift
             ;;
         *)
             args+=("$1")
