@@ -3,6 +3,11 @@
 ## including the description/source of the transmission curve, the units of the wavelength
 ## axis, and the list of nicknames used to reference this filter curve.
 
+['cfht/cfht_u']
+description = 'CFHT U Band downloaded from SVO filter profile service'
+nicknames = ['cfht_u','CFHT_u']
+wav_units = 'angstrom'
+
 ['jwst/nircam/f070w']
 description = 'JWST NIRCam F070W downloaded from SVO filter profile service'
 nicknames = ['f070w','F070W','f070','F070','NIRCam_F070W','nircam_f070w','jwst_nircam_f070w','JWST_NIRCam_F070W']
@@ -242,3 +247,30 @@ wav_units = 'angstrom'
 description = 'Euclid VIS.vis downloaded from SVO filter profile service'
 nicknames = ['vis','VIS','Euclid_VIS','euclid_vis','euclid_VIS','Euclid_vis']
 wav_units = 'angstrom'
+
+['euclid/NISP_Y']
+description = 'Euclid NISP Y.dat downloaded from SVO filter profile service'
+nicknames = ['nisp_y','NISP_Y','EUClID_NISP_Y', 'euclid_NISP_Y','Euclid_nisp_y']
+wav_units = 'angstrom'
+
+['euclid/NISP_J']
+description = 'Euclid NISP J.dat downloaded from SVO filter profile service'
+nicknames = ['nisp_j','NISP_J','EUCLID_NISP_J', 'euclid_NISP_J','Euclid_nisp_j']
+wav_units = 'angstrom'
+
+['euclid/NISP_H']
+description = 'Euclid NISP H.dat downloaded from SVO filter profile service'
+nicknames = ['nisp_h','NISP_H','EUCLID_NISP_H', 'euclid_NISP_H','Euclid_nisp_h']
+wav_units = 'angstrom'
+
+['spitzer/irac/ch1']
+description = 'Spitzer/IRAC CH1 downloaded from SVO filter profile service'
+nicknames = ['irac_ch1','IRAC_ch1','ch1','CH1','IRAC_36','irac_36']
+wav_units = 'angstrom'
+
+['spitzer/irac/ch2']
+description = 'Spitzer/IRAC CH2 downloaded from SVO filter profile service'
+nicknames = ['irac_ch2','IRAC_ch2','ch2','CH2','IRAC_45','irac_45']
+wav_units = 'angstrom'
+
+
