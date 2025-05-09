@@ -19,6 +19,11 @@ description = 'CFHT WIRCAM Ks Band downloaded from SVO filter profile service'
 nicknames = ['cfht_ks','CFHT_Ks', 'cfht_wircam_ks','CFHT_WIRCAM_Ks']
 wav_units = 'angstrom'
 
+['DECam/decam_u']
+description = 'DECam U Band downloaded from SVO filter profile service'
+nicknames = ['decam_u','DECam_u']
+wav_units = 'angstrom'
+
 ['DECam/decam_g']
 description = 'DECam G Band downloaded from SVO filter profile service'
 nicknames = ['decam_g','DECam_g']
