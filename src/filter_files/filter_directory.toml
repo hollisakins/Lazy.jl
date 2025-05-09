@@ -8,6 +8,44 @@ description = 'CFHT U Band downloaded from SVO filter profile service'
 nicknames = ['cfht_u','CFHT_u']
 wav_units = 'angstrom'
 
+['cfht/cfht_wircam_j']
+description = 'CFHT WIRCAM J Band downloaded from SVO filter profile service'
+nicknames = ['cfht_j','CFHT_J', 'cfht_wircam_j','CFHT_WIRCAM_J']
+wav_units = 'angstrom'
+
+
+['cfht/cfht_wircam_ks']
+description = 'CFHT WIRCAM Ks Band downloaded from SVO filter profile service'
+nicknames = ['cfht_ks','CFHT_Ks', 'cfht_wircam_ks','CFHT_WIRCAM_Ks']
+wav_units = 'angstrom'
+
+['DECam/decam_g']
+description = 'DECam G Band downloaded from SVO filter profile service'
+nicknames = ['decam_g','DECam_g']
+wav_units = 'angstrom'
+
+['DECam/decam_r']
+description = 'DECam R Band downloaded from SVO filter profile service'
+nicknames = ['decam_r','DECam_r']
+wav_units = 'angstrom'
+
+
+['DECam/decam_i']
+description = 'DECam I Band downloaded from SVO filter profile service'
+nicknames = ['decam_i','DECam_i']
+wav_units = 'angstrom'
+
+['DECam/decam_z']
+description = 'DECam Z Band downloaded from SVO filter profile service'
+nicknames = ['decam_z','DECam_z']
+wav_units = 'angstrom'
+
+['DECam/decam_y']
+description = 'DECam Y Band downloaded from SVO filter profile service'
+nicknames = ['decam_y','DECam_y']
+wav_units = 'angstrom'
+
+
 ['jwst/nircam/f070w']
 description = 'JWST NIRCam F070W downloaded from SVO filter profile service'
 nicknames = ['f070w','F070W','f070','F070','NIRCam_F070W','nircam_f070w','jwst_nircam_f070w','JWST_NIRCam_F070W']
