@@ -1,7 +1,5 @@
 # Lazy.jl
 
-[![Build Status](https://github.com/hollisakins/Lazy.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/hollisakins/Lazy.jl/actions/workflows/CI.yml?query=branch%3Amain)
-
 Photometric redshift fitting in Julia. Largely based on [eazy-py](https://github.com/gbrammer/eazy-py). Designed to be fast, simple, and multithreaded. 
 
 ## Installation 
