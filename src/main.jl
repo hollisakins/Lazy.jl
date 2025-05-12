@@ -14,7 +14,7 @@ using HDF5
 using PyCall
 
 
-
+ 
 igmpath = @__DIR__() * "/igm_data/"
 templatepath = @__DIR__() * "/templates/"
 template_directory = TOML.parsefile(templatepath * "template_directory.toml")
@@ -83,14 +83,14 @@ function print_ascii(io)
 end
 
 function main(argv)
-    check_version()
-
+    
     # Reset errno
     global errno = 0
     
     io = stdout
     print_ascii(io)
-
+    check_version()
+    
     if argv == []
         print_help(io)
         return errno
@@ -287,34 +287,18 @@ function fit(param)
     end
     println("Template set: $template_set")
  
-    templates = glob("*", templatepath * template_set)
+    templates = [joinpath(templatepath, file) for file in template_directory[template_set]["files"]]
     ntempl = length(templates)
-    s = 0
+    if ntempl == 0
+        panic("No templates found in the template set $template_set.")
+    end
     for (i, templ) in enumerate(templates)
         t = readdlm(templ)
-        wave = t[:,1]
-        flux = t[:,2]
-        if i == 1
-            s = size(t)[1]
-        else
-            if size(t)[1] != s
-                error("Template $i: $templ has different number of rows than the first template.")
-            end
-        end
+        s = length(t[:,1])
         templ_shortname = basename(templ)
         println("Template $i: $templ_shortname ($s,)")
-        
     end
     
-    templwav = readdlm(templates[1])[:,1]
-    templfnu = zeros(s, ntempl)
-    for (i, templ) in enumerate(templates)
-        t = readdlm(templ)
-        wave = t[:,1]
-        flux = t[:,2]
-        templfnu[:, i] =  flux .* wave .^ 2
-    end
-
     templgrid = zeros(ntempl, nz, nband)
     println("Building template grid: " * summary(templgrid))
     
@@ -327,15 +311,20 @@ function fit(param)
     igm_wavelengths = igm_file["wavelengths"][:]
     igm_transmission = igm_file["transmission"][:,:]
     close(igm_file)
-    idx  = searchsortedfirst(templwav, 1215.67)
     idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
 
     iter = ProgressBar(1:ntempl)
     for i in iter
+
+        t = readdlm(templates[i])
+        templwav = t[:,1]
+        templflam_i = t[:,2]
+        templfnu_i =  templflam_i .* templwav .^ 2
+        idx  = searchsortedfirst(templwav, 1215.67)
+
         @threads for j in 1:nz
             z = zgrid[j]
 
-            templfnu_i = templfnu[:, i]
             wav_obs = templwav .* (1+z)
             
             # Interpolate the IGM transmission at this redshift
@@ -349,14 +338,14 @@ function fit(param)
             y2 = interp(templwav[idx:end])
             transmission  = [y1; y2]
 
-            templfnu_i = templfnu_i .* transmission
+            templfnu_j = templfnu_i .* transmission
             
             @threads for k in 1:nband
                 
                 band = bands[k]
                 fwav, ftrans = get_filter(band)
                 nu = 1 ./ fwav
-                interp = linear_interpolation(wav_obs, templfnu_i)
+                interp = linear_interpolation(wav_obs, templfnu_j)
                 fnu_interp = interp(fwav)
             
                 result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
@@ -414,7 +403,7 @@ function fit(param)
             efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
             snr_j = fnu_j ./ efnu_tot_j
 
-            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j)
+            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
             detect = valid .& (snr_j .> 2.0)
             if sum(detect) < nphot_min
                 #println("Object $j: not enough detections (nphot = $(sum(detect)))")
@@ -429,7 +418,7 @@ function fit(param)
 
             # fnu_mod_j = sum(result .* templgrid_i, dims=1)[:]
             fnu_mod_j = transpose(templgrid_i) * result # order is important here
-            chi2grid[j,i] = sum(((fnu_j .- fnu_mod_j) .^ 2) ./ efnu_tot_j .^ 2)
+            chi2grid[j,i] = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
             
         end
 
@@ -475,9 +464,19 @@ function fit(param)
     if output_templ
         println("Writing template output to $output_file_templ")
 
+        templwav = readdlm(templates[1])[:,1]
         fnu_templ = zeros(nobj, length(templwav))
         idx  = searchsortedfirst(templwav, 1215.67)
         idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
+
+        templfnu = zeros(length(templwav), ntempl)
+        for (i, templ) in enumerate(templates)
+            t = readdlm(templ)
+            interp = linear_interpolation(t[:,1], t[:,2], extrapolation_bc=Flat())
+            templflam_i = interp(templwav)
+            templfnu[:,i] = templflam_i .* templwav .^ 2
+        end
+        idx = searchsortedfirst(templwav, 1215.67)
 
         @threads for j in 1:nobj
             z = zbest[j]
@@ -614,6 +613,120 @@ function list_templates()
         println("* $template_set_name ($nfiles)")
     end
 end
+
+function make_bins(wavs)
+    """ Given a series of wavelength points, find the edges and widths
+    of corresponding wavelength bins. """
+    edges = zeros(length(wavs)+1)
+    widths = zeros(length(wavs))
+    edges[1] = wavs[1] - (wavs[2] - wavs[1])/2
+    widths[end] = (wavs[end] - wavs[end-1])
+    edges[end] = wavs[end] + (wavs[end] - wavs[end-1])/2
+    edges[2:end-1] = (wavs[2:end] + wavs[1:end-1])/2
+    widths[1:end-1] = edges[2:end-1] - edges[1:end-2]
+    return edges, widths
+end
+
+function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0.0)
+    """
+    Interpolate a spectrum to a new wavelength grid.
+    """
+    # interp = linear_interpolation(wav_old, flux_old, extrapolation_bc=Flat())
+    # flux_new = interp(wav_new)
+    # return flux_new
+
+    # Make arrays of edge positions and widths for the old and new bins
+
+    old_edges, old_widths = make_bins(old_wavs)
+    new_edges, new_widths = make_bins(new_wavs)
+
+    # Generate output arrays to be populated
+    new_fluxes = zeros(length(new_wavs))
+
+    if !isnothing(old_errs)
+        if length(old_errs) != length(old_fluxes)
+            panic("old_fluxes and old_errs must be the same length")
+        else
+            new_errs = copy(new_fluxes)
+        end
+    end
+
+    start = 1
+    stop = 1
+
+    # Calculate new flux and uncertainty values, looping over new bins
+    for j in 1:length(new_wavs)
+
+        # Add filler values if new_wavs extends outside of spec_wavs
+        if (new_edges[j] < old_edges[1]) || (new_edges[j+1] > old_edges[end])
+            new_fluxes[j] = fill_value
+
+            if !isnothing(old_errs)
+                new_errs[j] = fill_value
+            end
+
+            if (j == 0) || (j == length(new_wavs))
+                # warnings.warn(
+                #     "Spectres: new_wavs contains values outside the range "
+                #     "in spec_wavs, new_fluxes and new_errs will be filled "
+                #     "with the value set in the 'fill' keyword argument "
+                #     "(by default 0).",
+                #     category=RuntimeWarning,
+                # )
+                continue
+            end
+        end
+
+        # Find first old bin which is partially covered by the new bin
+        while old_edges[start+1] <= new_edges[j]
+            start += 1
+        end
+
+        # Find last old bin which is partially covered by the new bin
+        while old_edges[stop+1] < new_edges[j+1]
+            stop += 1
+        end
+
+        # If new bin is fully inside an old bin start and stop are equal
+        if stop == start
+            new_fluxes[j] = old_fluxes[start]
+            if !isnothing(old_errs)
+                new_errs[j] = old_errs[start]
+            end
+            
+            # Otherwise multiply the first and last old bin widths by P_ij
+        else
+            start_factor = ((old_edges[start+1] - new_edges[j]) / (old_edges[start+1] - old_edges[start]))
+            
+            end_factor = ((new_edges[j+1] - old_edges[stop]) / (old_edges[stop+1] - old_edges[stop]))
+            
+            old_widths[start] *= start_factor
+            old_widths[stop] *= end_factor
+            
+            # Populate new_fluxes spectrum and uncertainty arrays
+            f_widths = old_widths[start:stop+1] .* old_fluxes[start:stop+1]
+            new_fluxes[j] = sum(f_widths)/sum(old_widths[start:stop+1])
+            
+            if !isnothing(old_errs)
+                e_wid = old_widths[start:stop+1]*old_errs[start:stop+1]
+                
+                new_errs[j] = sqrt(sum(e_wid .^2)) / sum(old_widths[start:stop+1])
+                
+                # Put back the old bin widths to their initial values
+                old_widths[start] /= start_factor
+                old_widths[stop] /= end_factor
+            end
+        end
+    end
+                
+    # If errors were supplied return both new_fluxes and new_errs.
+    if !isnothing(old_errs)
+        return new_fluxes, new_errs
+    else
+        return new_fluxes
+    end
+end
+
 
 
 
