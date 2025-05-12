@@ -292,16 +292,27 @@ function fit(param)
     if ntempl == 0
         panic("No templates found in the template set $template_set.")
     end
+
+
+    # Print out the templates for the user 
     for (i, templ) in enumerate(templates)
-        t = readdlm(templ)
-        s = length(t[:,1])
+        templwav, templflux, templz = load_template(templ)
         templ_shortname = basename(templ)
-        println("Template $i: $templ_shortname ($s,)")
+
+        if templz === nothing
+            s = length(templflux)
+            println("Template $i: $templ_shortname ($s,)")
+        else
+            s = size(templflux)
+            println("Template $i: $templ_shortname ($s)")
+        end
     end
     
+    # Build template grid 
     templgrid = zeros(ntempl, nz, nband)
     println("Building template grid: " * summary(templgrid))
     
+    # Load in IGM transmission data
     if !haskey(fitting, "igm")
         error("parameter `igm` not found in the parameter file.")
     end
@@ -316,29 +327,31 @@ function fit(param)
     iter = ProgressBar(1:ntempl)
     for i in iter
 
-        t = readdlm(templates[i])
-        templwav = t[:,1]
-        templflam_i = t[:,2]
-        templfnu_i =  templflam_i .* templwav .^ 2
-        idx  = searchsortedfirst(templwav, 1215.67)
+        templ_shortname = basename(templates[i])
+        templwav_i, templfnu_i, templz_i = load_template(templates[i])
+        idx  = searchsortedfirst(templwav_i, 1215.67)
 
         @threads for j in 1:nz
             z = zgrid[j]
 
-            wav_obs = templwav .* (1+z)
+            wav_obs = templwav_i .* (1+z)
             
             # Interpolate the IGM transmission at this redshift
-            # first interpolate over the redshift
             iz_up = searchsortedfirst(igm_redshifts, z)
             transmission = igm_transmission[iz_up,:]
 
             interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
-            y1 = interp(templwav[1:idx-1])
+            y1 = interp(templwav_i[1:idx-1])
             interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
-            y2 = interp(templwav[idx:end])
+            y2 = interp(templwav_i[idx:end])
             transmission  = [y1; y2]
 
-            templfnu_j = templfnu_i .* transmission
+            if templz_i === nothing
+                templfnu_j = templfnu_i .* transmission
+            else
+                zindex = argmin(abs.(templz_i .- z))
+                templfnu_j = templfnu_i[:,zindex] .* transmission
+            end
             
             @threads for k in 1:nband
                 
@@ -350,6 +363,7 @@ function fit(param)
             
                 result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
                 templgrid[i,j,k] = result
+
             end
         end
     end
@@ -437,19 +451,29 @@ function fit(param)
     izbest = map(argmin, eachrow(chi2grid))
     zbest = zgrid[izbest]
     coeffsbest = zeros(nobj,ntempl)
+    
     @threads for j in 1:nobj
         coeffsbest[j,:] = coeffs[j,izbest[j],:]
     end
     chi2best = vec(minimum(chi2grid, dims=2))
+
+    photobest = zeros(nobj, nband)
+    @threads for j in 1:nobj
+        photobest[j,:] = transpose(templgrid[:,izbest[j],:]) * coeffsbest[j,:]
+    end
     
     bad_objs = sum(chi2grid .== -1, dims=2) .== nz
     zbest[bad_objs] .= -1
     chi2best[bad_objs] .= -1
 
     println("Writing summary output to $output_file")
-    write_data(output_file, 
-               ["ID", "z_best", "chi2", "z_l95", "z_l68", "z_med", "z_u68", "z_u95"], 
-               Any[IDs, zbest, chi2best, z_l95, z_l68, z_med, z_u68, z_u95])
+    cols = ["ID", "z_best", "chi2", "z_l95", "z_l68", "z_med", "z_u68", "z_u95"] 
+    data = Any[IDs, zbest, chi2best, z_l95, z_l68, z_med, z_u68, z_u95]
+    for (i, band) in enumerate(bands)
+        push!(cols, band)
+        push!(data, photobest[:,i])
+    end
+    write_data(output_file, cols, data)
 
     if output_pz
         println("Writing P(z) output to $output_file_pz")
@@ -464,46 +488,94 @@ function fit(param)
     if output_templ
         println("Writing template output to $output_file_templ")
 
-        templwav = readdlm(templates[1])[:,1]
-        fnu_templ = zeros(nobj, length(templwav))
-        idx  = searchsortedfirst(templwav, 1215.67)
+        # Everything will get interpolated to a common wavelength grid 
+        # Defined by the template with the largest wavelength array 
+        # (i.e., highest resolution/largest range)
+        common_templwav = nothing
+        for (i, templ) in enumerate(templates)
+            templwav_i, templfnu_i, templz_i = load_template(templ)
+            if common_templwav === nothing
+                common_templwav = templwav_i
+            elseif length(templwav_i) > length(common_templwav)
+                common_templwav = templwav_i
+            end
+        end
+        
+        idx  = searchsortedfirst(common_templwav, 1215.67)
+        nwav = length(common_templwav)
+                
+        # Build template grid 
+        templgrid = zeros(ntempl, nz, nwav)
+    
+        igm_file = h5open(igmpath * fitting["igm"] * ".hdf5", "r")
+        igm_redshifts = igm_file["redshifts"][:]
+        igm_wavelengths = igm_file["wavelengths"][:]
+        igm_transmission = igm_file["transmission"][:,:]
+        close(igm_file)
         idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
 
-        templfnu = zeros(length(templwav), ntempl)
-        for (i, templ) in enumerate(templates)
-            t = readdlm(templ)
-            interp = linear_interpolation(t[:,1], t[:,2], extrapolation_bc=Flat())
-            templflam_i = interp(templwav)
-            templfnu[:,i] = templflam_i .* templwav .^ 2
-        end
-        idx = searchsortedfirst(templwav, 1215.67)
-
-        @threads for j in 1:nobj
-            z = zbest[j]
-            i = argmin(abs.(zgrid .- z))
-
-            wav_obs = templwav .* (1+z)
+        igm_grid = zeros(nz, nwav)
+        for i in 1:nz
+            z = zgrid[i]
             
             # Interpolate the IGM transmission at this redshift
             iz_up = searchsortedfirst(igm_redshifts, z)
-            transmission = igm_transmission[iz_up,:]
-            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
-            y1 = interp(templwav[1:idx-1])
-            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
-            y2 = interp(templwav[idx:end])
-            transmission  = [y1; y2]
-            
-            fnu_j = templfnu * coeffsbest[j,:]
-            fnu_j = fnu_j .* transmission
-            fnu_templ[j,:] = fnu_j
+            t = igm_transmission[iz_up,:]
 
+            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=Flat())
+            y1 = interp(common_templwav[1:idx-1])
+            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [t[idx_igm:end];1.0], extrapolation_bc=Flat())
+            y2 = interp(common_templwav[idx:end])
+            t  = [y1; y2]
+
+            igm_grid[i,:] = t
         end
-        temp_templ = vcat(transpose(templwav), fnu_templ)
+
+        templfnu = zeros(nwav, nz, ntempl)
+        for i in 1:ntempl
+
+            templwav_i, templfnu_i, templz_i = load_template(templates[i])
+
+            if templz_i === nothing
+                # Interpolate the template to the common wavelength grid
+                interp = linear_interpolation(templwav_i, templfnu_i, extrapolation_bc=Flat())
+                templfnu_i = interp(common_templwav)
+            end
+
+            @threads for j in 1:nz
+                z = zgrid[j]
+
+                transmission = igm_grid[j,:]
+                
+                if templz_i === nothing
+                    templfnu_j = templfnu_i .* transmission
+                else
+                    zindex = argmin(abs.(templz_i .- z))
+                    interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
+                    templfnu_j = interp(common_templwav) .* transmission
+                end
+                
+                templfnu[:,j,i] = templfnu_j
+                    
+            end
+        end
+    
+        fnu_templ = zeros(nobj, nwav)
+        iter = ProgressBar(1:nobj)
+        for i in iter
+            z = zbest[i]
+            j = izbest[i] 
+            fnu_templ[i,:] = templfnu[:,j,:] * coeffsbest[i,:]
+        end
+
+        temp_templ = vcat(transpose(common_templwav), fnu_templ)
         temp_IDs = vcat([-1], IDs)
         temp_zbest = vcat([-1], zbest)
         write_data(output_file_templ, 
                    ["ID", "z_best", "templ"], 
                    Any[temp_IDs, temp_zbest, temp_templ])
+    
+    
     end
                 
     
@@ -728,6 +800,54 @@ function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0
 end
 
 
+function load_template(file)
+    """
+    Load a template from a file.
+    """
+
+    isfits = endswith(file, ".fits")
+
+    # If the template is a FITS file, read the "wave" and "flux" columns 
+    # and check for redshift-dependence 
+    if isfits
+        t = FITS(file)
+        templwav = read(t[2], "wave")
+        templflam = read(t[2], "flux")
+
+        # Check for redshift-dependence
+        if ndims(templflam) == 2
+            zdependent = true
+        else
+            zdependent = false
+        end
+
+        # If the template is redshift-dependent
+        if zdependent
+            # get the redshift values from the header
+            hdr = read_header(t[2])
+            templnz = hdr["NZ"]
+            templz = zeros(templnz)
+            for tmp in 1:templnz
+                tmp0 = tmp-1
+                templz[tmp] = hdr["Z$tmp0"]
+            end
+            
+            # transpose the flux arrray 
+            templflam = transpose(templflam)
+        end
+        templfnu = templflam .* templwav .^ 2
+
+    else
+        # If the template is an ASCII file, read the first two columns 
+        t = readdlm(file)
+        templwav = t[:,1]
+        templflam = t[:,2]
+        templfnu =  templflam .* templwav .^ 2
+        templz = nothing
+    end
+    
+    return templwav, templfnu, templz
+end
 
 
 

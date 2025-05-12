@@ -1,6 +1,6 @@
 name = "Lazy"
 uuid = "96c49960-8378-4ad0-a9df-297e9ffd4de5"
-version = "1.0.1-DEV"
+version = "1.0.2-DEV"
 authors = ["Hollis Akins"]
 
 [deps]
