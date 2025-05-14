@@ -76,3 +76,24 @@
         'Larson22/binc100z001age6_cloudy.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022)"
+
+[sfhz_Larson22_schr]
+    files = [
+        'sfhz/corr_sfhz_13_bin3_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin3_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin2_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin1_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin0_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.01.fits',
+        'Larson22/binc100z001age6.dat',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'misc/schrodinger_template.fits',
+    ]
+    attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), schrodinger"
