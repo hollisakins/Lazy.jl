@@ -11,7 +11,7 @@ using Trapz
 using LinearAlgebra
 using Base.Threads
 using HDF5
-using PyCall
+using OrderedCollections
 
 
  
@@ -188,8 +188,6 @@ function fit(param)
         else
             output_templ = false
         end
-        output_file_pz = replace(output_file, ".fits" => "_pz.fits")
-        output_file_templ = replace(output_file, ".fits" => "_templ.fits")
     else
         panic("section `io` not found in the parameter file.")
     end
@@ -415,22 +413,32 @@ function fit(param)
             fnu_j = fnu[j,:]
             efnu_j = efnu[j,:]
             efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
-            snr_j = fnu_j ./ efnu_tot_j
-
+            
             valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
-            detect = valid .& (snr_j .> 2.0)
-            if sum(detect) < nphot_min
-                #println("Object $j: not enough detections (nphot = $(sum(detect)))")
+            if sum(valid) < 2
                 chi2grid[j,i] = -1
                 continue
             end
+            
+            detect = valid .& ((fnu_j ./ efnu_j) .> 2.0)
+            if sum(detect) < nphot_min
+                chi2grid[j,i] = -1
+                continue
+            end
+            
+            snr_j = fnu_j ./ efnu_tot_j
+            
+            # templgrid_ij = transpose(templgrid_i)
+            # templ_norm = norm.(eachrow(templgrid_ij), 2)
+            # valid_temp = templ_norm .> 0.0
+            # templ_norm[valid_temp .== false] .= 1.0
+            # templgrid_ij = templgrid_ij ./ templ_norm
 
             templgrid_ij = transpose(templgrid_i) ./ efnu_tot_j
             
             result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
             coeffs[j,i,:] = result
 
-            # fnu_mod_j = sum(result .* templgrid_i, dims=1)[:]
             fnu_mod_j = transpose(templgrid_i) * result # order is important here
             chi2grid[j,i] = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
             
@@ -466,27 +474,36 @@ function fit(param)
     zbest[bad_objs] .= -1
     chi2best[bad_objs] .= -1
 
-    println("Writing summary output to $output_file")
-    cols = ["ID", "z_best", "chi2", "z_l95", "z_l68", "z_med", "z_u68", "z_u95"] 
-    data = Any[IDs, zbest, chi2best, z_l95, z_l68, z_med, z_u68, z_u95]
+    println("Writing summary output to $output_file:SUMMARY")
+    data = OrderedDict{String, Dict{String, Any}}()
+    data["ID"] = Dict("format" => "K", "data" => IDs)
+    data["z_best"] = Dict("format" => "E", "data" => zbest)
+    data["chi2"] = Dict("format" => "E", "data" => chi2best)
+    data["z_l95"] = Dict("format" => "E", "data" => z_l95)
+    data["z_l68"] = Dict("format" => "E", "data" => z_l68)
+    data["z_med"] = Dict("format" => "E", "data" => z_med)
+    data["z_u68"] = Dict("format" => "E", "data" => z_u68)
+    data["z_u95"] = Dict("format" => "E", "data" => z_u95)
     for (i, band) in enumerate(bands)
-        push!(cols, band)
-        push!(data, photobest[:,i])
+        data[band] = Dict("format" => "E", "unit" => "fnu", "data" => photobest[:,i])
     end
-    write_data(output_file, cols, data)
+    data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
+
+    write_data(output_file, data, extname="SUMMARY")
 
     if output_pz
-        println("Writing P(z) output to $output_file_pz")
+        println("Writing P(z) output to $output_file:PZ")
         temp_pz = pz ./ trapz(zgrid, pz)
         temp_pz = vcat(transpose(zgrid), temp_pz)
         temp_IDs = vcat([-1], IDs)
-        write_data(output_file_pz, 
-                   ["ID", "Pz"], 
-                   Any[temp_IDs, temp_pz])
+        data = OrderedDict{String, Dict{String, Any}}()
+        data["ID"] = Dict("format" => "K", "data" => temp_IDs)
+        data["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
+        write_data(output_file, data, extname="PZ")
     end
 
     if output_templ
-        println("Writing template output to $output_file_templ")
+        println("Writing template output to $output_file:TEMPL")
 
         # Everything will get interpolated to a common wavelength grid 
         # Defined by the template with the largest wavelength array 
@@ -504,8 +521,6 @@ function fit(param)
         idx  = searchsortedfirst(common_templwav, 1215.67)
         nwav = length(common_templwav)
                 
-        # Build template grid 
-        templgrid = zeros(ntempl, nz, nwav)
     
         igm_file = h5open(igmpath * fitting["igm"] * ".hdf5", "r")
         igm_redshifts = igm_file["redshifts"][:]
@@ -542,7 +557,7 @@ function fit(param)
                 templfnu_i = interp(common_templwav)
             end
 
-            @threads for j in 1:nz
+            for j in 1:nz
                 z = zgrid[j]
 
                 transmission = igm_grid[j,:]
@@ -559,21 +574,32 @@ function fit(param)
                     
             end
         end
-    
-        fnu_templ = zeros(nobj, nwav)
-        iter = ProgressBar(1:nobj)
-        for i in iter
-            z = zbest[i]
-            j = izbest[i] 
-            fnu_templ[i,:] = templfnu[:,j,:] * coeffsbest[i,:]
+        
+        data = OrderedDict{String, Dict{String, Any}}()
+        temp_zgrid = vcat([-1], zgrid)
+        data["z"] = Dict("format" => "E", "data" => temp_zgrid)
+        for (i, templ) in enumerate(templates)
+            templ_shortname = basename(templ)
+            templ_shortname = replace(templ_shortname, ".fits" => "")
+            temp_templfnu = vcat(transpose(common_templwav), transpose(templfnu[:,:,i]))
+            data[templ_shortname] = Dict("format" => "$(nwav)E", "data" => temp_templfnu)
         end
+        write_data(output_file, data, extname="TEMPL")
+    
+        # # fnu_templ = zeros(nobj, nwav)
+        # # iter = ProgressBar(1:nobj)
+        # # for i in iter
+        # #     z = zbest[i]
+        # #     j = izbest[i] 
+        # #     fnu_templ[i,:] = templfnu[:,j,:] * coeffsbest[i,:]
+        # # end
 
-        temp_templ = vcat(transpose(common_templwav), fnu_templ)
-        temp_IDs = vcat([-1], IDs)
-        temp_zbest = vcat([-1], zbest)
-        write_data(output_file_templ, 
-                   ["ID", "z_best", "templ"], 
-                   Any[temp_IDs, temp_zbest, temp_templ])
+        # temp_templ = vcat(transpose(common_templwav), fnu_templ)
+        # temp_IDs = vcat([-1], IDs)
+        # temp_zbest = vcat([-1], zbest)
+        # write_data(output_file_templ, 
+        #            ["ID", "z_best", "templ"], 
+        #            Any[temp_IDs, temp_zbest, temp_templ])
     
     
     end

@@ -19,23 +19,15 @@ end
 
 
 using PyCall
+const writedata = PyNULL()
 function __init__()
-    pyimport_conda("astropy.table", "astropy")
-
-    py"""
-    from astropy.table import Table
-    def write_data(filename, columns, data):
-        pydata = {}
-        for i, col in enumerate(columns):
-            pydata[col] = data[i]
-        t = Table(pydata)
-        t.write(filename, format='fits', overwrite=True)
-        return
-    """
+    pyimport_conda("astropy.io", "astropy")
+    pushfirst!(pyimport("sys")."path", @__DIR__())
+    copy!(writedata, pyimport("writedata"))
 end
 
-function write_data(filename, columns, data)
-    py"write_data"(filename, columns, data)
+function write_data(filename, data; extname="DATA")
+    return writedata.write_data(filename, data, extname=extname)
 end
 
 include("main.jl")
