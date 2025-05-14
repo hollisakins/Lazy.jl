@@ -860,6 +860,8 @@ function load_template(file)
             
             # transpose the flux arrray 
             templflam = transpose(templflam)
+        else
+            templz = nothing
         end
         templfnu = templflam .* templwav .^ 2
 
