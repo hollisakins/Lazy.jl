@@ -26,8 +26,8 @@ function __init__()
     copy!(writedata, pyimport("writedata"))
 end
 
-function write_data(filename, data; extname="DATA")
-    return writedata.write_data(filename, data, extname=extname)
+function write_data(filename, data, extname)
+    return writedata.write_data(filename, data, extname)
 end
 
 include("main.jl")

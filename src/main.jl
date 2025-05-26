@@ -13,23 +13,9 @@ using Base.Threads
 using HDF5
 using OrderedCollections
 
-
- 
 igmpath = @__DIR__() * "/igm_data/"
 templatepath = @__DIR__() * "/templates/"
-template_directory = TOML.parsefile(templatepath * "template_directory.toml")
-template_set_names = sort(collect(keys(template_directory)))
-
 filterpath = @__DIR__() * "/filter_files/"
-filter_directory = TOML.parsefile(filterpath * "filter_directory.toml")
-filter_nicknames = Dict{String, String}()
-filter_names = sort(collect(keys(filter_directory)))
-
-for key in filter_names
-    for n in filter_directory[key]["nicknames"]
-        filter_nicknames[n] = key
-    end
-end
 
 function panic(
     msg::String, err::Union{Exception, Nothing} = nothing,
@@ -82,16 +68,35 @@ function print_ascii(io)
     println("====================================")
 end
 
+function load_templates()
+    """
+    Load the templates from the template directory.
+    """
+    if !isdir(templatepath)
+        panic("Template directory $templatepath not found.")
+    end
+    return TOML.parsefile(templatepath * "template_directory.toml")
+end
+
+function load_filters()
+    """
+    Load the filters from the filter directory.
+    """
+    if !isdir(filterpath)
+        panic("Filter directory $filterpath not found.")
+    end
+    return TOML.parsefile(filterpath * "filter_directory.toml")
+end
+
 function main(argv)
     
     # Reset errno
     global errno = 0
     
-    io = stdout
-    print_ascii(io)
-    check_version()
-    
+    io = stdout    
     if argv == []
+        print_ascii(io)
+        check_version()
         print_help(io)
         return errno
     end
@@ -102,11 +107,16 @@ function main(argv)
         
         # Return the help message and exit
         if x == "-h" || x == "--help"
+            print_ascii(io)
+            check_version()        
             print_help(io)
             return errno
         
         # 
         elseif x == "fit"
+            print_ascii(io)
+            check_version()
+
             if argv == []
                 print_help(io, "fit")
                 return errno
@@ -130,11 +140,18 @@ function main(argv)
 
         elseif x == "list-templates"
             # List the available templates
+            print_ascii(io)
+            check_version()
             return list_templates()
-
+            
         elseif x == "list-filters"
-            # List the available templates
+            # List the available filters
+            print_ascii(io)
+            check_version()
             return list_filters()
+            
+        elseif x == "params"
+            return params()
             
         else
             # Argument not recognized
@@ -280,17 +297,26 @@ function fit(param)
     end
 
     template_set = fitting["template_set"]
-    if !haskey(template_directory, template_set)
-        panic("Template set $template_set not found in the template directory.")
-    end
-    println("Template set: $template_set")
- 
-    templates = [joinpath(templatepath, file) for file in template_directory[template_set]["files"]]
-    ntempl = length(templates)
-    if ntempl == 0
-        panic("No templates found in the template set $template_set.")
+    
+    if template_set isa String
+        template_directory = load_templates()
+        if !haskey(template_directory, template_set)
+            panic("Template set $template_set not found in the template directory.")
+        end
+        println("Template set: $template_set")
+        templates = [joinpath(templatepath, file) for file in template_directory[template_set]["files"]]
+    elseif template_set isa Vector{String}
+        templates = [joinpath(templatepath, file) for file in template_set]
+    else
+        panic("parameter `template_set` must be a string, defining the template set name, or a vector of strings, defining the paths to the template files to use.")
     end
 
+    ntempl = length(templates)
+    for templ in templates
+        if !isfile(templ)
+            panic("Template file $templ not found in the templates directory.")
+        end
+    end
 
     # Print out the templates for the user 
     for (i, templ) in enumerate(templates)
@@ -311,11 +337,11 @@ function fit(param)
     println("Building template grid: " * summary(templgrid))
     
     # Load in IGM transmission data
-    if !haskey(fitting, "igm")
-        error("parameter `igm` not found in the parameter file.")
+    if !haskey(fitting, "igm_model")
+        error("parameter `igm_model` not found in the parameter file.")
     end
     
-    igm_file = h5open(igmpath * fitting["igm"] * ".hdf5", "r")
+    igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
     igm_redshifts = igm_file["redshifts"][:]
     igm_wavelengths = igm_file["wavelengths"][:]
     igm_transmission = igm_file["transmission"][:,:]
@@ -489,7 +515,7 @@ function fit(param)
     end
     data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
 
-    write_data(output_file, data, extname="SUMMARY")
+    write_data(output_file, data, "SUMMARY")
 
     if output_pz
         println("Writing P(z) output to $output_file:PZ")
@@ -499,11 +525,12 @@ function fit(param)
         data = OrderedDict{String, Dict{String, Any}}()
         data["ID"] = Dict("format" => "K", "data" => temp_IDs)
         data["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
-        write_data(output_file, data, extname="PZ")
+        write_data(output_file, data, "PZ")
     end
 
     if output_templ
         println("Writing template output to $output_file:TEMPL")
+        GC.gc()
 
         # Everything will get interpolated to a common wavelength grid 
         # Defined by the template with the largest wavelength array 
@@ -522,7 +549,7 @@ function fit(param)
         nwav = length(common_templwav)
                 
     
-        igm_file = h5open(igmpath * fitting["igm"] * ".hdf5", "r")
+        igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
         igm_redshifts = igm_file["redshifts"][:]
         igm_wavelengths = igm_file["wavelengths"][:]
         igm_transmission = igm_file["transmission"][:,:]
@@ -584,23 +611,7 @@ function fit(param)
             temp_templfnu = vcat(transpose(common_templwav), transpose(templfnu[:,:,i]))
             data[templ_shortname] = Dict("format" => "$(nwav)E", "data" => temp_templfnu)
         end
-        write_data(output_file, data, extname="TEMPL")
-    
-        # # fnu_templ = zeros(nobj, nwav)
-        # # iter = ProgressBar(1:nobj)
-        # # for i in iter
-        # #     z = zbest[i]
-        # #     j = izbest[i] 
-        # #     fnu_templ[i,:] = templfnu[:,j,:] * coeffsbest[i,:]
-        # # end
-
-        # temp_templ = vcat(transpose(common_templwav), fnu_templ)
-        # temp_IDs = vcat([-1], IDs)
-        # temp_zbest = vcat([-1], zbest)
-        # write_data(output_file_templ, 
-        #            ["ID", "z_best", "templ"], 
-        #            Any[temp_IDs, temp_zbest, temp_templ])
-    
+        write_data(output_file, data, "TEMPL")
     
     end
                 
@@ -655,8 +666,10 @@ function list_filters()
     List the available filters in the filter_files directory.
     """
     # filter_files = glob("*.dat", filterpath)
+    filter_directory = load_filters()
+    filter_names = sort(collect(keys(filter_directory)))
+    
     println("Available filters:")
-
     for filter_name in filter_names
         filter_description = filter_directory[filter_name]["description"]
         print(rpad(filter_name, 25))
@@ -669,8 +682,19 @@ end
 
 function get_filter(nickname)
     """
-    Get the filter name from the nickname.
+    Get the filter transmission curve from the nickname.
     """
+
+    filter_directory = load_filters()
+    filter_nicknames = Dict{String, String}()
+    filter_names = sort(collect(keys(filter_directory)))
+
+    for key in filter_names
+        for n in filter_directory[key]["nicknames"]
+            filter_nicknames[n] = key
+        end
+    end
+
     if haskey(filter_nicknames, nickname)
         real_name = filter_nicknames[nickname]
         filt = readdlm(filterpath * real_name)
@@ -700,6 +724,8 @@ function list_templates()
     List the available templates in the template_set directory.
     """
     println("Available template sets:")
+    template_directory = load_templates()
+    template_set_names = sort(collect(keys(template_directory)))
     for template_set_name in template_set_names
         template_files = template_directory[template_set_name]["files"]
         for template_file in template_files
@@ -723,6 +749,22 @@ function make_bins(wavs)
     edges[2:end-1] = (wavs[2:end] + wavs[1:end-1])/2
     widths[1:end-1] = edges[2:end-1] - edges[1:end-2]
     return edges, widths
+end
+
+function params()
+    """ 
+    Read in the example parameter file and print the parameters.
+    """
+    param_file = @__DIR__() * "/example_params.toml"
+    if !isfile(param_file)
+        panic("Parameter file $param_file not found.")
+    end
+    f = readlines(param_file)
+    for line in f
+        println(line)
+    end
+
+
 end
 
 function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0.0)

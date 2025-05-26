@@ -1,22 +1,15 @@
 #!/bin/bash
 
-# A simple driver script for invoking Runic's main function. Put this script
-# somewhere in PATH and make sure it is executable. The script expects Runic to
-# be installed in the `@runic` shared environment and julia to be available in
-# PATH. See installation instructions in the repository README for more
-# details.
-#
-# Repository: https://github.com/fredrikekre/Runic.jl
-# SPDX-License-Identifier: MIT
 export JULIA_LOAD_PATH="@lazy"
 
 args=()
 cmd=$1
 if [ -z "$cmd" ]; then
     echo "Usage: $0 <command> [args]" >&2
-    echo "Available commands: fit, list-templates, list-filters" >&2
+    echo "Available commands: fit, params, list-templates, list-filters" >&2
     exit 1
 fi
+
 # Skip past the command
 args+=("$cmd")
 shift 

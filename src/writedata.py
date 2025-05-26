@@ -1,7 +1,7 @@
 from astropy.io import fits
 import os
 
-def write_data(filename, data, extname="DATA"):
+def write_data(filename, data, extname):
     if not os.path.exists(filename):
         with fits.open(filename, mode='append') as hdul:
             # Create a new FITS file
@@ -28,7 +28,7 @@ def write_data(filename, data, extname="DATA"):
                     )
                 )
             # Create a new BinTableHDU with the specified data
-            hdu = fits.BinTableHDU.from_columns(coldefs)
+            hdu = fits.BinTableHDU.from_columns(coldefs, name=extname)
         else:
             # Create a new ImageHDU
             hdu = fits.ImageHDU(data=data, name=extname)
