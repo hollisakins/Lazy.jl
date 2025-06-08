@@ -2,6 +2,9 @@ module Lazy
 
 const version = string(pkgversion(@__MODULE__))
 
+using LinearAlgebra: BLAS
+BLAS.set_num_threads(1)
+
 using TOML, HTTP
 function check_version()
     # some logic to ensure the code is up-to-date

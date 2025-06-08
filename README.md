@@ -182,4 +182,3 @@ description = 'Spitzer/IRAC CH2 downloaded from SVO filter profile service'
 nicknames = ['irac_ch2','IRAC_ch2','ch2','CH2','IRAC_45','irac_45']
 wav_units = 'angstrom'
 ```
-
