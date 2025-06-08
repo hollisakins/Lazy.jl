@@ -94,6 +94,10 @@
         'sfhz/corr_sfhz_13_bin0_av0.01.fits',
         'Larson22/binc100z001age6.dat',
         'Larson22/binc100z001age6_cloudy.dat',
-        'misc/schrodinger_template.fits',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age65.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+        'Larson22/binc100z001age7.dat',
+        'misc/schrodinger.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), schrodinger"

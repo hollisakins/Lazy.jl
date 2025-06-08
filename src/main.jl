@@ -376,7 +376,11 @@ function fit(param)
                 zindex = argmin(abs.(templz_i .- z))
                 templfnu_j = templfnu_i[:,zindex] .* transmission
             end
-            
+
+            # normalize template to rest-1micron (helps with numerical stability)
+            windex = argmin(abs.(templwav_i .- 1e4))
+            templfnu_j /= templfnu_j[windex]
+
             @threads for k in 1:nband
                 
                 band = bands[k]
