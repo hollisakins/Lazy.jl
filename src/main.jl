@@ -601,7 +601,7 @@ function fit(param)
                     templfnu_j = interp(common_templwav) .* transmission
                 end
 
-                windex = argmin(abs.(templwav_i .- 1e4))
+                windex = argmin(abs.(common_templwav .- 1e4))
                 templfnu_j /= templfnu_j[windex]
                 
                 templfnu[:,j,i] = templfnu_j
