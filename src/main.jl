@@ -348,6 +348,7 @@ function fit(param)
     close(igm_file)
     idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
     maxz = igm_redshifts[end]
+    pr = true
 
     iter = ProgressBar(1:ntempl)
     for i in iter
@@ -355,7 +356,7 @@ function fit(param)
         templ_shortname = basename(templates[i])
         templwav_i, templfnu_i, templz_i = load_template(templates[i])
         idx  = searchsortedfirst(templwav_i, 1215.67)
-
+        
         @threads for j in 1:nz
             z = zgrid[j]
 
@@ -363,7 +364,10 @@ function fit(param)
             
             # Interpolate the IGM transmission at this redshift
             if z > maxz
-                println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
+                if pr:
+                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
+                    pr = false
+                end
                 iz_up = length(igm_redshifts)
             else
                 iz_up = searchsortedfirst(igm_redshifts, z)
@@ -568,11 +572,23 @@ function fit(param)
         idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
 
         igm_grid = zeros(nz, nwav)
+        maxz = igm_redshifts[end]
+        pr = true
+
         for i in 1:nz
             z = zgrid[i]
             
+
             # Interpolate the IGM transmission at this redshift
-            iz_up = searchsortedfirst(igm_redshifts, z)
+            if z > maxz
+                if pr:
+                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
+                    pr = false
+                end
+                iz_up = length(igm_redshifts)
+            else
+                iz_up = searchsortedfirst(igm_redshifts, z)
+            end
             t = igm_transmission[iz_up,:]
 
             interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=Flat())
