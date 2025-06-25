@@ -13,7 +13,7 @@ def write_data(filename, data, extname):
         # Check if the extension already exists
         if extname in hdul:
             # If it exists, remove it
-            hdul.remove(extname)
+            del hdul[extname]
     
         if type(data) == dict:
             # Create a FITS table with the specified columns

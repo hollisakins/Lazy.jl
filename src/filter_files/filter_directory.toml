@@ -151,6 +151,41 @@ description = 'JWST NIRCam F480M downloaded from SVO filter profile service'
 nicknames = ['f480m','F480M','NIRCam_F480M','nircam_f480m','jwst_nircam_f480m','JWST_NIRCam_F480M']
 wav_units = 'angstrom'
 
+['jwst/nircam/f164n']
+description = 'JWST NIRCam F164N downloaded from SVO filter profile service'
+nicknames = ['f164n','F164N','NIRCam_F164N','nircam_f164n','jwst_nircam_f164n','JWST_NIRCam_F164N']
+wav_units = 'angstrom'
+
+['jwst/nircam/f187n']
+description = 'JWST NIRCam F187N downloaded from SVO filter profile service'
+nicknames = ['f187n','F187N','NIRCam_F187N','nircam_f187n','jwst_nircam_f187n','JWST_NIRCam_F187N']
+wav_units = 'angstrom'
+
+['jwst/nircam/f212n']
+description = 'JWST NIRCam F212N downloaded from SVO filter profile service'
+nicknames = ['f212n','F212N','NIRCam_F212N','nircam_f212n','jwst_nircam_f212n','JWST_NIRCam_F212N']
+wav_units = 'angstrom'
+
+['jwst/nircam/f323n']
+description = 'JWST NIRCam F323N downloaded from SVO filter profile service'
+nicknames = ['f323n','F323N','NIRCam_F323N','nircam_f323n','jwst_nircam_f323n','JWST_NIRCam_F323N']
+wav_units = 'angstrom'
+
+['jwst/nircam/f405n']
+description = 'JWST NIRCam F405N downloaded from SVO filter profile service'
+nicknames = ['f405n','F405N','NIRCam_F405N','nircam_f405n','jwst_nircam_f405n','JWST_NIRCam_F405N']
+wav_units = 'angstrom'
+
+['jwst/nircam/f466n']
+description = 'JWST NIRCam F466N downloaded from SVO filter profile service'
+nicknames = ['f466n','F466N','NIRCam_F466N','nircam_f466n','jwst_nircam_f466n','JWST_NIRCam_F466N']
+wav_units = 'angstrom'
+
+['jwst/nircam/f470n']
+description = 'JWST NIRCam F470N downloaded from SVO filter profile service'
+nicknames = ['f470n','F470N','NIRCam_F470N','nircam_f470n','jwst_nircam_f470n','JWST_NIRCam_F470N']
+wav_units = 'angstrom'
+
 ['jwst/miri/f560w']
 description = 'JWST MIRI F560W downloaded from SVO filter profile service'
 nicknames = ['f560w','F560W','MIRI_F560W','miri_f560w','jwst_miri_f560w','JWST_MIRI_F560W']

@@ -220,12 +220,12 @@ function fit(param)
     
     translate = param["translate"]
     bands = sort(collect(keys(param["translate"])))
+    # Load in the data
+    fnu, efnu, bands = load_data(cat, bands, translate)
     nband = length(bands)
     println("nband = $nband")
     println("bands = $bands")
 
-    # Load in the data
-    fnu, efnu = load_data(cat, bands, translate)
     println("fnu = " * summary(fnu))
     println("efnu = " * summary(efnu))
 
@@ -347,6 +347,7 @@ function fit(param)
     igm_transmission = igm_file["transmission"][:,:]
     close(igm_file)
     idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
+    maxz = igm_redshifts[end]
 
     iter = ProgressBar(1:ntempl)
     for i in iter
@@ -361,7 +362,13 @@ function fit(param)
             wav_obs = templwav_i .* (1+z)
             
             # Interpolate the IGM transmission at this redshift
-            iz_up = searchsortedfirst(igm_redshifts, z)
+            if z > maxz
+                println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
+                iz_up = length(igm_redshifts)
+            else
+                iz_up = searchsortedfirst(igm_redshifts, z)
+            end
+
             transmission = igm_transmission[iz_up,:]
 
             interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
@@ -636,7 +643,12 @@ function load_data(cat, bands, translate)
     """
     IDs = read(cat[2], "ID")
     nobj = length(IDs)
+
+    # Downselect to bands that are present in the catalog
+    all_cols = FITSIO.colnames(cat[2])
+    bands = filter(b -> (translate[b]["flux"] in all_cols) && (translate[b]["error"] in all_cols), bands)
     nband = length(bands)
+
     fnu = zeros(nobj, nband)
     efnu = zeros(nobj, nband)
     for (i, band) in enumerate(bands)
@@ -647,7 +659,7 @@ function load_data(cat, bands, translate)
         fnu[:, i] = fnu_i
         efnu[:, i] = efnu_i
     end
-    return fnu, efnu
+    return fnu, efnu, bands
 end
 
 
