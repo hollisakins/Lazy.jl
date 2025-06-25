@@ -364,7 +364,7 @@ function fit(param)
             
             # Interpolate the IGM transmission at this redshift
             if z > maxz
-                if pr:
+                if pr
                     println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
                     pr = false
                 end
@@ -581,7 +581,7 @@ function fit(param)
 
             # Interpolate the IGM transmission at this redshift
             if z > maxz
-                if pr:
+                if pr
                     println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
                     pr = false
                 end
