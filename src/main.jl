@@ -164,6 +164,40 @@ function main(argv)
 
 end
 
+function precompute_template_errors(zgrid::Vector{Float64}, pivot_wavs::Vector{Float64}, 
+                                   tef_x::Vector{Float64}, tef_y::Vector{Float64},
+                                   tef_xmin::Float64, tef_xmax::Float64, 
+                                   tef_clip_min::Float64, tef_clip_max::Float64,
+                                   template_error_scale::Float64)::Matrix{Float64}
+    """
+    Pre-compute template error grid for all redshifts and bands.
+    This avoids repeated computation during by-object fitting.
+    
+    Returns: template_error_grid[nz, nband]
+    """
+    nz = length(zgrid)
+    nband = length(pivot_wavs)
+    template_error_grid = zeros(nz, nband)
+    
+    for i in 1:nz
+        z = zgrid[i]
+        pivot_wavs_rest = pivot_wavs ./ (1 + z)
+        
+        # Interpolate template error function
+        tef_interp = linear_interpolation(tef_x, tef_y, extrapolation_bc=Flat())
+        tefz = tef_interp(pivot_wavs_rest)
+        
+        # Apply clipping
+        tefz[pivot_wavs_rest .< tef_xmin] .= tef_clip_min
+        tefz[pivot_wavs_rest .> tef_xmax] .= tef_clip_max
+        tefz = tefz * template_error_scale
+        
+        template_error_grid[i, :] = tefz
+    end
+    
+    return template_error_grid
+end
+
 function fit(param)
 
     # Load in TOML parameter file
@@ -433,26 +467,36 @@ function fit(param)
     
 
     println("===========================")
-    println("Fitting by redshift ")
+    println("Fitting by object (memory-optimized)")
     
-    chi2grid = zeros(nobj,nz)
-    coeffs = zeros(nobj,nz,ntempl)
+    # Pre-compute template errors for all redshifts
+    println("Pre-computing template errors...")
+    template_error_grid = precompute_template_errors(zgrid, pivot_wavs, tef_x, tef_y, 
+                                                   tef_xmin, tef_xmax, tef_clip_min, tef_clip_max, 
+                                                   template_error_scale)
     
-    iter = ProgressBar(1:nz)
-    for i in iter
+    # Initialize arrays - keep chi2grid for P(z), eliminate massive coeffs array
+    chi2grid = zeros(nobj, nz)  # Keep for P(z) - only (nobj × nz)
+    zbest = zeros(nobj)
+    chi2best = zeros(nobj) 
+    coeffsbest = zeros(nobj, ntempl)  # Only store best-fit coefficients
+    
+    # Process each object individually  
+    iter = ProgressBar(1:nobj)
+    @threads for j in iter
+        fnu_j = fnu[j,:]
+        efnu_j = efnu[j,:]
         
-        templgrid_i = templgrid[:,i,:]
-
-        pivot_wavs_rest = pivot_wavs ./ (1+zgrid[i])
-        tef_interp = linear_interpolation(tef_x, tef_y, extrapolation_bc=Flat())
-        tefz = tef_interp(pivot_wavs_rest)
-        tefz[pivot_wavs_rest .< tef_xmin] .= tef_clip_min
-        tefz[pivot_wavs_rest .> tef_xmax] .= tef_clip_max
-        tefz = tefz * template_error_scale
-
-        @threads for j in 1:nobj
-            fnu_j = fnu[j,:]
-            efnu_j = efnu[j,:]
+        # Track best fit for this object
+        best_chi2 = Inf
+        best_z_idx = 0
+        best_coeffs = zeros(ntempl)
+        
+        # Loop over all redshifts for this object
+        for i in 1:nz
+            templgrid_i = templgrid[:,i,:]
+            tefz = template_error_grid[i, :]
+            
             efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
             
             valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
@@ -468,23 +512,33 @@ function fit(param)
             end
             
             snr_j = fnu_j ./ efnu_tot_j
-            
-            # templgrid_ij = transpose(templgrid_i)
-            # templ_norm = norm.(eachrow(templgrid_ij), 2)
-            # valid_temp = templ_norm .> 0.0
-            # templ_norm[valid_temp .== false] .= 1.0
-            # templgrid_ij = templgrid_ij ./ templ_norm
-
             templgrid_ij = transpose(templgrid_i) ./ efnu_tot_j
             
             result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
-            coeffs[j,i,:] = result
-
-            fnu_mod_j = transpose(templgrid_i) * result # order is important here
-            chi2grid[j,i] = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
+            fnu_mod_j = transpose(templgrid_i) * result
+            chi2_j = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
             
+            # Store chi2 for P(z) calculation
+            chi2grid[j,i] = chi2_j
+            
+            # Update best fit if this is better
+            if chi2_j < best_chi2
+                best_chi2 = chi2_j
+                best_z_idx = i
+                best_coeffs = result
+            end
         end
-
+        
+        # Store best-fit results
+        if best_z_idx > 0
+            zbest[j] = zgrid[best_z_idx]
+            chi2best[j] = best_chi2
+            coeffsbest[j,:] = best_coeffs
+        else
+            zbest[j] = -1
+            chi2best[j] = -1
+            coeffsbest[j,:] .= 0
+        end
     end
 
     
@@ -497,23 +551,17 @@ function fit(param)
     z_u68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.840)))]
     z_u95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.975)))]
     
-    izbest = map(argmin, eachrow(chi2grid))
-    zbest = zgrid[izbest]
-    coeffsbest = zeros(nobj,ntempl)
-    
-    @threads for j in 1:nobj
-        coeffsbest[j,:] = coeffs[j,izbest[j],:]
-    end
-    chi2best = vec(minimum(chi2grid, dims=2))
-
-    photobest = zeros(nobj, nband)
-    @threads for j in 1:nobj
-        photobest[j,:] = transpose(templgrid[:,izbest[j],:]) * coeffsbest[j,:]
-    end
-    
     bad_objs = sum(chi2grid .== -1, dims=2) .== nz
     zbest[bad_objs] .= -1
     chi2best[bad_objs] .= -1
+
+    photobest = zeros(nobj, nband)
+    @threads for j in 1:nobj
+        if zbest[j] > 0  # Only calculate for valid fits
+            z_idx = argmin(abs.(zgrid .- zbest[j]))
+            photobest[j,:] = transpose(templgrid[:,z_idx,:]) * coeffsbest[j,:]
+        end
+    end
 
     println("Writing summary output to $output_file:SUMMARY")
     data = OrderedDict{String, Dict{String, Any}}()
