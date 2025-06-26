@@ -54,6 +54,10 @@
     z_max = 20.0
     z_step = 0.01
 
+    # Template grid caching (default: true)
+    # Caches template grids to speed up subsequent runs with same parameters
+    template_cache = true
+
 [translate]
     # Tells the code which columns in the input catalog to use for the fluxes 
     # and errors in each band.The keys are the filter names, which correspond to

@@ -12,7 +12,6 @@ using TOML
 using FITSIO
 using NonNegLeastSquares, Glob
 using DelimitedFiles
-using ProgressBars
 using Interpolations
 using Trapz
 using LinearAlgebra
@@ -24,6 +23,357 @@ igmpath = @__DIR__() * "/igm_data/"
 templatepath = @__DIR__() * "/templates/"
 filterpath = @__DIR__() * "/filter_files/"
 
+"""
+    fit_single_object(j, fnu_j, efnu_j, templgrid, template_error_grid, zgrid, nphot_min, nband, ntempl, nz; interrupted_flag=nothing)
+
+Fit a single object across all redshifts and return results.
+Returns (zbest, chi2best, coeffsbest, chi2_row) where chi2_row is the full chi2 vs redshift for P(z) calculation.
+"""
+function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64}, 
+                          templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64}, 
+                          zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
+                          interrupted_flag::Union{Nothing,Ref{Bool}}=nothing)
+    
+    # Wrap entire function in try-catch to handle individual object failures gracefully
+    try
+        # Pre-allocate working arrays to avoid repeated allocations
+        templgrid_ij = Matrix{Float64}(undef, nband, ntempl)
+        fnu_mod_j = Vector{Float64}(undef, nband)
+        chi2_row = Vector{Float64}(undef, nz)
+        
+        # Track best fit for this object
+        best_chi2 = Inf
+        best_z_idx = 0
+        best_coeffs = zeros(ntempl)
+        
+        # Loop over all redshifts for this object
+        for i in 1:nz
+            # Check for interruption if flag provided
+            if interrupted_flag !== nothing && interrupted_flag[]
+                # Fill remaining chi2 values with -1 and break
+                chi2_row[i:end] .= -1
+                break
+            end
+            
+            templgrid_i = templgrid[:,i,:]
+            tefz = template_error_grid[i, :]
+            
+            efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
+            
+            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
+            if sum(valid) < 2
+                chi2_row[i] = -1
+                continue
+            end
+            
+            detect = valid .& ((fnu_j ./ efnu_j) .> 2.0)
+            if sum(detect) < nphot_min
+                chi2_row[i] = -1
+                continue
+            end
+            
+            snr_j = fnu_j ./ efnu_tot_j
+            
+            # Optimized: avoid transpose by using templgrid_i directly with broadcasting
+            # templgrid_i is (ntempl, nband), we need (nband, ntempl) divided by efnu_tot_j
+            for k in 1:nband
+                for t in 1:ntempl
+                    templgrid_ij[k, t] = templgrid_i[t, k] / efnu_tot_j[k]
+                end
+            end
+            
+            result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
+            
+            # Numerical stability checks
+            if !all(isfinite, result)
+                #@warn "⚠️ Non-finite coefficients detected for object $j at z=$(zgrid[i]). Skipping this redshift."
+                chi2_row[i] = -1
+                continue
+            end
+            
+            if all(result .≈ 0.0)
+                #@warn "⚠️ All-zero coefficients detected for object $j at z=$(zgrid[i]). Poor template fit."
+                chi2_row[i] = 1e10  # High chi2 to mark as poor fit
+                continue
+            end
+            
+            # Optimized: avoid transpose by manual matrix multiplication
+            fill!(fnu_mod_j, 0.0)
+            for k in 1:nband
+                for t in 1:ntempl
+                    fnu_mod_j[k] += templgrid_i[t, k] * result[t]
+                end
+            end
+            chi2_j = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
+            
+            # Additional numerical stability check for chi2
+            if !isfinite(chi2_j) || chi2_j < 0
+                #@warn "⚠️ Invalid chi2 ($chi2_j) for object $j at z=$(zgrid[i]). Skipping."
+                chi2_row[i] = -1
+                continue
+            end
+            
+            # Store chi2 for P(z) calculation
+            chi2_row[i] = chi2_j
+            
+            # Update best fit if this is better
+            if chi2_j < best_chi2
+                best_chi2 = chi2_j
+                best_z_idx = i
+                best_coeffs = result
+            end
+        end
+    
+        # Determine final results
+        if best_z_idx > 0
+            zbest = zgrid[best_z_idx]
+            chi2best = best_chi2
+            coeffsbest = best_coeffs
+        else
+            zbest = -1.0
+            chi2best = -1.0
+            coeffsbest = zeros(ntempl)
+        end
+        
+        return (zbest, chi2best, coeffsbest, chi2_row)
+        
+    catch e
+        # Handle any unexpected errors for this individual object
+        @warn "⚠️ Error fitting object $j: $e"
+        
+        # Return safe default values indicating failure
+        zbest_failed = -1.0
+        chi2best_failed = -1.0
+        coeffsbest_failed = zeros(ntempl)
+        chi2_row_failed = fill(-1.0, nz)
+        
+        return (zbest_failed, chi2best_failed, coeffsbest_failed, chi2_row_failed)
+    end
+end
+
+# Custom Progress Bar Utility
+mutable struct ProgressBar
+    total::Int
+    current::Atomic{Int}
+    description::String
+    start_time::Float64
+    last_update_time::Ref{Float64}
+    show_rate::Bool
+    show_eta::Bool
+    bar_width::Int
+    prefix_emoji::String
+    
+    function ProgressBar(total::Int, description::String; 
+                        show_rate::Bool=true, show_eta::Bool=true, 
+                        bar_width::Int=20, prefix_emoji::String="🧠")
+        new(total, Atomic{Int}(0), description, time(), Ref(time()), 
+            show_rate, show_eta, bar_width, prefix_emoji)
+    end
+end
+
+"""
+Format numbers with k/M suffixes for better readability
+"""
+function format_number(n::Real)::String
+    if n >= 1_000_000
+        return "$(round(n/1_000_000, digits=1))M"
+    elseif n >= 1_000
+        return "$(round(n/1_000, digits=1))k"
+    else
+        return string(round(Int, n))
+    end
+end
+
+"""
+Format elapsed time in a human-readable format
+"""
+function format_time(elapsed::Float64)::String
+    if elapsed < 1
+        return "$(round(Int, elapsed * 1000))ms"
+    elseif elapsed < 60
+        return "$(round(elapsed, digits=1))s"
+    elseif elapsed < 3600
+        minutes = floor(Int, elapsed / 60)
+        seconds = round(Int, elapsed % 60)
+        return "$(minutes)m$(seconds)s"
+    else
+        hours = floor(Int, elapsed / 3600)
+        minutes = floor(Int, (elapsed % 3600) / 60)
+        return "$(hours)h$(minutes)m"
+    end
+end
+
+"""
+Update progress bar display
+"""
+function update!(pb::ProgressBar, new_value::Int; force::Bool=false)
+    pb.current[] = new_value
+    current_time = time()
+    
+    # Only update display if forced or enough time has passed (throttling)
+    if force || (current_time - pb.last_update_time[]) > 0.1
+        pb.last_update_time[] = current_time
+        display_progress(pb)
+    end
+end
+
+"""
+Increment progress by 1
+"""
+function increment!(pb::ProgressBar; force::Bool=false)
+    new_value = atomic_add!(pb.current, 1)
+    current_time = time()
+    
+    # Only update display if forced or enough time has passed
+    if force || (current_time - pb.last_update_time[]) > 0.1
+        pb.last_update_time[] = current_time
+        display_progress(pb)
+    end
+    
+    return new_value
+end
+
+"""
+Display the progress bar
+"""
+function display_progress(pb::ProgressBar)
+    current = pb.current[]
+    percentage = min(100, round(Int, (current / pb.total) * 100))
+    
+    # Create progress bar
+    filled = round(Int, (current / pb.total) * pb.bar_width)
+    bar = "█"^filled * "░"^(pb.bar_width - filled)
+    
+    # Format counts
+    current_str = format_number(current)
+    total_str = format_number(pb.total)
+    
+    # Build display string
+    display_str = "$(pb.prefix_emoji) $(pb.description) [$bar] $percentage% ($current_str/$total_str"
+    
+    # Add rate and ETA if requested
+    if pb.show_rate || pb.show_eta
+        elapsed = time() - pb.start_time
+        if elapsed > 0 && current > 0
+            rate = current / elapsed
+            
+            if pb.show_rate
+                display_str *= "; $(round(rate, digits=1)) obj/s"
+            end
+            
+            if pb.show_eta && current < pb.total
+                remaining = pb.total - current
+                eta = remaining / rate
+                
+                eta_str = if !isfinite(eta) || eta <= 0
+                    "∞"
+                elseif eta < 60
+                    "$(round(Int, eta))s"
+                elseif eta < 3600
+                    "$(round(Int, eta ÷ 60))m $(round(Int, eta % 60))s"
+                else
+                    "$(round(Int, eta ÷ 3600))h $(round(Int, (eta % 3600) ÷ 60))m"
+                end
+                
+                display_str *= ", ETA: $eta_str"
+            end
+        end
+    end
+    
+    display_str *= ")"
+    
+    # Clear line and print
+    print("\r$display_str")
+    flush(stdout)
+end
+
+"""
+Finish the progress bar with completion message
+"""
+function finish!(pb::ProgressBar; final_message::String="")
+    pb.current[] = pb.total
+    current_time = time()
+    elapsed = current_time - pb.start_time
+    
+    # Use elapsed time as default final message
+    if final_message == ""
+        final_message = "took $(format_time(elapsed))"
+    end
+    
+    # Build final display string respecting original settings
+    current_str = format_number(pb.total)
+    total_str = format_number(pb.total)
+    
+    display_str = "$(pb.prefix_emoji) $(pb.description) [$("█"^pb.bar_width)] 100% ($current_str/$total_str"
+    
+    # Add rate only if show_rate was enabled
+    if pb.show_rate && elapsed > 0
+        rate = pb.total / elapsed
+        display_str *= "; $(round(rate, digits=1)) obj/s"
+    end
+    
+    display_str *= ", $final_message)"
+    
+    print("\r$display_str")
+    println()  # New line after completion
+    flush(stdout)
+end
+
+# Spinner utilities for dynamic feedback
+const SPINNER_CHARS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+function with_spinner(operation::Function, message::String, success_emoji::String="✅")
+    """
+    Run an operation with a spinner for visual feedback.
+    Falls back to static messages in non-interactive terminals.
+    """
+    # Check for terminal capabilities - TTY detection doesn't work reliably through module invocation
+    term_val = get(ENV, "TERM", "")
+    has_proper_term = term_val != "dumb" && term_val != ""
+    # Allow spinners if we have a proper TERM, even if TTY detection fails
+    if has_proper_term
+        # Use spinner for interactive terminals
+        spinner_active = Ref(true)
+        max_line_length = Ref(0)
+        
+        # Start spinner task
+        spinner_task = @async begin
+            i = 1
+            while spinner_active[]
+                spinner_line = "$(SPINNER_CHARS[i]) $message..."
+                print("\r$spinner_line")
+                max_line_length[] = max(max_line_length[], length(spinner_line))
+                flush(stdout)
+                sleep(0.1)
+                i = (i % length(SPINNER_CHARS)) + 1
+            end
+        end
+        
+        try
+            result = operation()
+            spinner_active[] = false
+            wait(spinner_task)
+            # Clear the spinner line completely and print success message
+            clear_line = "\r" * " "^max_line_length[] * "\r"
+            print("$clear_line$success_emoji $message\n")
+            flush(stdout)
+            return result
+        catch e
+            spinner_active[] = false
+            wait(spinner_task)
+            # Clear the spinner line completely and print error message
+            clear_line = "\r" * " "^max_line_length[] * "\r"
+            print("$clear_line❌ $message (failed)\n")
+            flush(stdout)
+            rethrow(e)
+        end
+    else
+        # Fallback for non-interactive terminals - only print completion message
+        result = operation()
+        println("$success_emoji $message")
+        return result
+    end
+end
 
 function print_help(io, cmd::String = "main")
     printstyled(io, "Lazy.jl \n", bold = true)
@@ -33,6 +383,9 @@ function print_help(io, cmd::String = "main")
         println("  fit <options>       Fit the data")
         println("  list-templates      List the available templates")
         println("  list-filters        List the available filters")
+        println("  cache-clear         Clear cached template grids")
+        println("  -v, --version       Show version information")
+        println("  -h, --help          Show this help message")
     elseif cmd == "fit"
         println("")
         println("  -p, --param     Path to the parameter file")
@@ -100,6 +453,11 @@ function main(argv::Vector{String})
             print_help(io)
             return 0
         
+        # Return version information
+        elseif x == "-v" || x == "--version"
+            println("Lazy.jl version $version")
+            return 0
+        
         # 
         elseif x == "fit"
             print_ascii(io)
@@ -140,6 +498,18 @@ function main(argv::Vector{String})
             
         elseif x == "params"
             return params()
+            
+        elseif x == "cache-clear"
+            # Clear template cache
+            print_ascii(io)
+            check_version()
+            removed_count, freed_gb = clear_cache()
+            if removed_count > 0
+                println("Cleared $removed_count cached template grids ($(round(freed_gb, digits=2)) GB freed)")
+            else
+                println("No cached template grids found")
+            end
+            return 0
             
         else
             # Argument not recognized
@@ -186,6 +556,72 @@ function precompute_template_errors(zgrid::Vector{Float64}, pivot_wavs::Vector{F
     return template_error_grid
 end
 
+function estimate_memory_usage(nobj::Int, nz::Int, nband::Int, ntempl::Int)::Dict{String, Float64}
+    """
+    Estimate memory usage for the fitting process in GB.
+    
+    Returns a dictionary with estimated memory usage for different components.
+    """
+    # Template grid: ntempl × nz × nband × 8 bytes (Float64)
+    templgrid_gb = (ntempl * nz * nband * 8) / (1024^3)
+    
+    # Chi2 grid: nobj × nz × 8 bytes (Float64)  
+    chi2grid_gb = (nobj * nz * 8) / (1024^3)
+    
+    # Template error grid: nz × nband × 8 bytes (Float64)
+    template_error_gb = (nz * nband * 8) / (1024^3)
+    
+    # Best-fit coefficients: nobj × ntempl × 8 bytes (Float64)
+    coeffs_gb = (nobj * ntempl * 8) / (1024^3)
+    
+    # Photometric data: nobj × nband × 2 (flux + error) × 8 bytes
+    photdata_gb = (nobj * nband * 2 * 8) / (1024^3)
+    
+    # Working arrays per thread (templgrid_ij, fnu_mod_j per thread)
+    nthreads = Threads.nthreads()
+    working_arrays_gb = (nthreads * (nband * ntempl + nband) * 8) / (1024^3)
+    
+    # Total estimated peak usage
+    peak_gb = templgrid_gb + chi2grid_gb + template_error_gb + coeffs_gb + photdata_gb + working_arrays_gb
+    
+    return Dict(
+        "template_grid" => templgrid_gb,
+        "chi2_grid" => chi2grid_gb, 
+        "template_error_grid" => template_error_gb,
+        "coefficients" => coeffs_gb,
+        "photometric_data" => photdata_gb,
+        "working_arrays" => working_arrays_gb,
+        "estimated_peak" => peak_gb
+    )
+end
+
+function print_memory_estimate(mem_dict::Dict{String, Float64})
+    """
+    Print a formatted memory usage estimate.
+    """
+    println("====================================")
+    println("Memory Usage Estimate:")
+    println("  Template grid:      $(round(mem_dict["template_grid"], digits=2)) GB")
+    println("  Chi2 grid:          $(round(mem_dict["chi2_grid"], digits=2)) GB") 
+    println("  Template errors:    $(round(mem_dict["template_error_grid"], digits=2)) GB")
+    println("  Coefficients:       $(round(mem_dict["coefficients"], digits=2)) GB")
+    println("  Photometric data:   $(round(mem_dict["photometric_data"], digits=2)) GB")
+    println("  Working arrays:     $(round(mem_dict["working_arrays"], digits=2)) GB")
+    println("  ----------------------------------------")
+    println("  Estimated peak:     $(round(mem_dict["estimated_peak"], digits=2)) GB")
+    
+    if mem_dict["estimated_peak"] > 16.0
+        println("  ⚠️  WARNING: High memory usage detected!")
+        println("     Consider reducing parameter space if system has <$(round(mem_dict["estimated_peak"] * 1.2, digits=1))GB RAM")
+    elseif mem_dict["estimated_peak"] > 8.0
+        println("  ⚠️  CAUTION: Moderate memory usage.")
+        println("     Monitor system memory during fitting.")
+    else
+        println("  ✅ Memory usage looks reasonable.")
+    end
+    println("====================================")
+end
+
 function fit(param)
 
     # Load in TOML parameter file
@@ -204,9 +640,7 @@ function fit(param)
         io = param["io"]
         if haskey(io, "input_catalog")
             input_catalog = io["input_catalog"]
-            println("Input catalog: $input_catalog")
-            # Read the input catalog
-            cat = FITS(input_catalog)
+            cat = with_spinner(() -> FITS(input_catalog), "Loading catalog: $input_catalog", "📊")
         else
             throw(LazyError("parameter `io.input_catalog` not found in the parameter file"))
         end
@@ -233,23 +667,23 @@ function fit(param)
 
     IDs = Int.(read(cat[2], "ID"))
     nobj = length(IDs)
-    println("nobj = $nobj")
+    println("📊 Objects: $nobj")
         
     println("====================================")
     if !haskey(param, "translate")
-        error("section `translate` not found in the parameter file")
+        throw(LazyError("section `translate` not found in the parameter file"))
     end
     
     translate = param["translate"]
     bands = sort(collect(keys(param["translate"])))
     # Load in the data
-    fnu, efnu, bands = load_data(cat, bands, translate)
+    fnu, efnu, bands = with_spinner(() -> load_data(cat, bands, translate), "Loading photometric data", "📊")
     nband = length(bands)
-    println("nband = $nband")
-    println("bands = $bands")
+    println("📊 Bands: $nband")
+    println("📊 Filters: $bands")
 
-    println("fnu = " * summary(fnu))
-    println("efnu = " * summary(efnu))
+    println("📊 Flux data: " * summary(fnu))
+    println("📊 Error data: " * summary(efnu))
 
     if !haskey(io, "missing_data_format")
         throw(LazyError("parameter `io.missing_data_format` not found in the parameter file"))
@@ -266,7 +700,7 @@ function fit(param)
         fnu[condition] .= NaN
         efnu[condition] .= NaN
     else
-        println("Warning: unrecognized missing data format: $missing_data_format, using input catalog as is")
+        println("⚠️ Unrecognized missing data format: $missing_data_format, using input catalog as is")
     end
 
         
@@ -305,9 +739,7 @@ function fit(param)
     z_min = fitting["z_min"]
     z_max = fitting["z_max"]
     z_step = fitting["z_step"]
-    println("z_min = $z_min")
-    println("z_max = $z_max")
-    println("z_step = $z_step")
+    println("🎆 Redshift range: $z_min - $z_max (step: $z_step)")
 
     zgrid = collect(range(z_min, stop=z_max, step=z_step))
     nz = length(zgrid)
@@ -321,11 +753,11 @@ function fit(param)
     template_set = fitting["template_set"]
     
     if template_set isa String
-        template_directory = load_templates()
+        template_directory = with_spinner(() -> load_templates(), "Loading template directory", "⚙️")
         if !haskey(template_directory, template_set)
             throw(LazyError("Template set $template_set not found in the template directory"))
         end
-        println("Template set: $template_set")
+        println("⚙️ Template set: $template_set")
         templates = [joinpath(templatepath, file) for file in template_directory[template_set]["files"]]
     elseif template_set isa Vector{String}
         templates = [joinpath(templatepath, file) for file in template_set]
@@ -340,6 +772,10 @@ function fit(param)
         end
     end
 
+    # Estimate and report memory usage
+    memory_estimate = estimate_memory_usage(nobj, nz, nband, ntempl)
+    print_memory_estimate(memory_estimate)
+
     # Print out the templates for the user 
     for (i, templ) in enumerate(templates)
         templwav, templflux, templz = load_template(templ)
@@ -347,33 +783,64 @@ function fit(param)
 
         if templz === nothing
             s = length(templflux)
-            println("Template $i: $templ_shortname ($s,)")
+            println("⚙️ Template $i: $templ_shortname ($s,)")
         else
             s = size(templflux)
-            println("Template $i: $templ_shortname ($s)")
+            println("⚙️ Template $i: $templ_shortname ($s)")
         end
     end
     
-    # Build template grid 
-    templgrid = zeros(ntempl, nz, nband)
-    println("Building template grid: " * summary(templgrid))
+    # Check for template cache before building grid
+    use_cache = get(fitting, "template_cache", true)  # Default enabled
+    templgrid = nothing
+    template_error_grid = nothing
+    cache_key = ""
     
-    # Load in IGM transmission data
-    if !haskey(fitting, "igm_model")
-        error("parameter `igm_model` not found in the parameter file")
+    if use_cache
+        # Generate cache key from all relevant parameters
+        cache_key = generate_cache_key(templates, zgrid, bands, fitting["igm_model"], 
+                                     fitting["template_error"], fitting["template_error_scale"])
+        
+        # Try to load from cache
+        cached_data = load_template_cache(cache_key)
+        if cached_data !== nothing
+            templgrid, template_error_grid = cached_data
+            println("✅ Loading cached template grid ($(cache_key)) - " * summary(templgrid))
+        end
     end
     
-    igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
-    igm_redshifts = igm_file["redshifts"][:]
-    igm_wavelengths = igm_file["wavelengths"][:]
-    igm_transmission = igm_file["transmission"][:,:]
-    close(igm_file)
+    # Build template grid if not loaded from cache
+    if templgrid === nothing
+        templgrid = zeros(ntempl, nz, nband)
+        templgrid_size_gb = sizeof(templgrid) / (1024^3)
+        println("🧠 Building template grid: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
+        if templgrid_size_gb > 8.0
+            println("⚠️ Large template grid detected. Consider reducing nz, nband, or ntempl if memory issues occur.")
+        end
+        
+        # Initialize progress bar for template processing
+        template_progress = ProgressBar(ntempl, "Loading templates...", 
+                                       show_rate=false, show_eta=false, 
+                                       prefix_emoji="📊")
+        
+        # Load in IGM transmission data
+    if !haskey(fitting, "igm_model")
+        throw(LazyError("parameter `igm_model` not found in the parameter file"))
+    end
+    
+    igm_redshifts, igm_wavelengths, igm_transmission = with_spinner(() -> begin
+        igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
+        redshifts = igm_file["redshifts"][:]
+        wavelengths = igm_file["wavelengths"][:]
+        transmission = igm_file["transmission"][:,:]
+        close(igm_file)
+        return redshifts, wavelengths, transmission
+    end, "Loading IGM model: $(fitting["igm_model"])", "🌌")
     idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
     maxz = igm_redshifts[end]
     pr = true
 
-    iter = ProgressBar(1:ntempl)
-    for i in iter
+    for i in 1:ntempl
 
         templ_shortname = basename(templates[i])
         templwav_i, templfnu_i, templz_i = load_template(templates[i])
@@ -387,7 +854,7 @@ function fit(param)
             # Interpolate the IGM transmission at this redshift
             if z > maxz
                 if pr
-                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
+                    println("⚠️ Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
                     pr = false
                 end
                 iz_up = length(igm_redshifts)
@@ -414,7 +881,8 @@ function fit(param)
             windex = argmin(abs.(templwav_i .- 1e4))
             templfnu_j /= templfnu_j[windex]
 
-            @threads for k in 1:nband
+            # Sequential loop over bands (removed nested threading for thread safety)
+            for k in 1:nband
                 
                 band = bands[k]
                 fwav, ftrans = get_filter(band)
@@ -427,257 +895,337 @@ function fit(param)
 
             end
         end
+        
+        # Update template progress
+        increment!(template_progress, force=true)
     end
-   
-    if !haskey(fitting, "template_error")
-        error("parameter `template_error` not found in the parameter file")
-    end
-   
-    if !haskey(fitting, "template_error_scale")
-        error("parameter `template_error_scale` not found in the parameter file")
-    end
-
-    template_error = fitting["template_error"]
-    template_error_scale = fitting["template_error_scale"]
-    println("Template error: $template_error")
-
-    tef = readdlm(templatepath * "template_error/" * template_error * ".dat")
-    tef_x = tef[:,1]
-    tef_y = tef[:,2]
-    tef_xmin = minimum(tef_x[tef_y .> 0])
-    tef_xmax = maximum(tef_x[tef_y .> 0])
-    tef_clip_min = tef_y[tef_y .> 0][1]
-    tef_clip_max = tef_y[tef_y .> 0][end]
-    println("TEF x range: $tef_xmin - $tef_xmax")
-    println("TEF y range: $tef_clip_min - $tef_clip_max")
-    pivot_wavs = get_pivot_wavelengths(bands)
-
+        # Finish template progress bar
+        finish!(template_progress)
+    end  # End of if templgrid === nothing
     
+    # Build template error grid if not loaded from cache
+    if template_error_grid === nothing
+        if !haskey(fitting, "template_error")
+            throw(LazyError("parameter `template_error` not found in the parameter file"))
+        end
+       
+        if !haskey(fitting, "template_error_scale")
+            throw(LazyError("parameter `template_error_scale` not found in the parameter file"))
+        end
+
+        template_error = fitting["template_error"]
+        template_error_scale = fitting["template_error_scale"]
+        println("Template error: $template_error")
+
+        tef = readdlm(templatepath * "template_error/" * template_error * ".dat")
+        tef_x = tef[:,1]
+        tef_y = tef[:,2]
+        tef_xmin = minimum(tef_x[tef_y .> 0])
+        tef_xmax = maximum(tef_x[tef_y .> 0])
+        tef_clip_min = tef_y[tef_y .> 0][1]
+        tef_clip_max = tef_y[tef_y .> 0][end]
+        println("TEF x range: $tef_xmin - $tef_xmax")
+        println("TEF y range: $tef_clip_min - $tef_clip_max")
+        pivot_wavs = get_pivot_wavelengths(bands)
+
+        println("Building template error grid..")
+        template_error_grid = precompute_template_errors(zgrid, pivot_wavs, tef_x, tef_y, 
+            tef_xmin, tef_xmax, tef_clip_min, tef_clip_max, template_error_scale)
+        
+        # Save to cache if grid was just built and caching is enabled
+        if use_cache && cache_key != ""
+            metadata = Dict(
+                "templates" => templates,
+                "zgrid" => zgrid,
+                "bands" => bands,
+                "igm_model" => fitting["igm_model"],
+                "template_error" => fitting["template_error"],
+                "template_error_scale" => fitting["template_error_scale"],
+                "ntempl" => ntempl,
+                "nz" => nz,
+                "nband" => nband
+            )
+            
+            save_template_cache(templgrid, template_error_grid, metadata, cache_key)
+            println("💾 Template grid cached for future use ($(cache_key))")
+        end
+    end
 
     println("===========================")
-    println("Fitting by object (memory-optimized)")
     
-    # Pre-compute template errors for all redshifts
-    println("Pre-computing template errors..")
-    template_error_grid = precompute_template_errors(zgrid, pivot_wavs, tef_x, tef_y, 
-                                                   tef_xmin, tef_xmax, tef_clip_min, tef_clip_max, 
-                                                   template_error_scale)
+    # Template grids are now ready (either from cache or newly built)
     
+    println("🧠 Fitting by object")
     # Initialize arrays - keep chi2grid for P(z), eliminate massive coeffs array
     chi2grid = zeros(nobj, nz)  # Keep for P(z) - only (nobj × nz)
     zbest = zeros(nobj)
     chi2best = zeros(nobj) 
     coeffsbest = zeros(nobj, ntempl)  # Only store best-fit coefficients
     
-    # Process each object individually  
-    iter = ProgressBar(1:nobj)
-    @threads for j in iter
-        fnu_j = fnu[j,:]
-        efnu_j = efnu[j,:]
+    # Memory usage warning
+    chi2grid_size_gb = sizeof(chi2grid) / (1024^3)
+    total_fitting_memory_gb = chi2grid_size_gb + sizeof(coeffsbest) / (1024^3)
+    if total_fitting_memory_gb > 4.0
+        println("⚠️ Large fitting arrays detected (~$(round(total_fitting_memory_gb, digits=2)) GB). Monitor memory usage.")
+    end
+    
+    # Process each object individually using @spawn for better control
+    # println("🧠 Fitting $nobj objects (press Ctrl+C to interrupt)")
+    
+    # Set up interrupt handling
+    interrupted = Ref(false)
+    
+    # Set up signal handler for clean interruption
+    try
+        # Set up interrupt detection (simplified approach)
         
-        # Track best fit for this object
-        best_chi2 = Inf
-        best_z_idx = 0
-        best_coeffs = zeros(ntempl)
+        # Launch fitting tasks with dynamic work distribution
+        nthreads_to_use = min(Threads.nthreads(), nobj)
         
-        # Loop over all redshifts for this object
-        for i in 1:nz
-            templgrid_i = templgrid[:,i,:]
-            tefz = template_error_grid[i, :]
+        # Optimize batch size: balance between task overhead and load balancing
+        # Use larger batches for many objects, smaller for few objects
+        objects_per_task = max(1, min(100, nobj ÷ (nthreads_to_use * 4)))
+        ntasks = cld(nobj, objects_per_task)  # ceiling division
+        
+        println("⚙️ Using $nthreads_to_use threads, $ntasks tasks ($objects_per_task objects/task)")
+        
+        # Initialize progress bar for fitting
+        progress_bar = ProgressBar(nobj, "Fitting...", 
+                                  show_rate=true, show_eta=true, 
+                                  prefix_emoji="🧠")
+        
+        # Create batched tasks for better efficiency
+        tasks = Vector{Task}(undef, ntasks)
+        for task_id in 1:ntasks
+            start_obj = (task_id - 1) * objects_per_task + 1
+            end_obj = min(task_id * objects_per_task, nobj)
+            object_range = start_obj:end_obj
             
-            efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
-            
-            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
-            if sum(valid) < 2
-                chi2grid[j,i] = -1
-                continue
-            end
-            
-            detect = valid .& ((fnu_j ./ efnu_j) .> 2.0)
-            if sum(detect) < nphot_min
-                chi2grid[j,i] = -1
-                continue
-            end
-            
-            snr_j = fnu_j ./ efnu_tot_j
-            templgrid_ij = transpose(templgrid_i) ./ efnu_tot_j
-            
-            result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
-            fnu_mod_j = transpose(templgrid_i) * result
-            chi2_j = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
-            
-            # Store chi2 for P(z) calculation
-            chi2grid[j,i] = chi2_j
-            
-            # Update best fit if this is better
-            if chi2_j < best_chi2
-                best_chi2 = chi2_j
-                best_z_idx = i
-                best_coeffs = result
+            tasks[task_id] = Threads.@spawn begin
+                # Results for this batch
+                batch_results = Vector{Tuple{Int, Float64, Float64, Vector{Float64}, Vector{Float64}}}()
+                
+                for j in object_range
+                    # Check for interruption before starting work
+                    if interrupted[]
+                        push!(batch_results, (j, -1.0, -1.0, zeros(ntempl), fill(-1.0, nz)))
+                        continue
+                    end
+                    
+                    # Fit this object
+                    zbest_j, chi2best_j, coeffsbest_j, chi2_row_j = fit_single_object(
+                        j, fnu[j,:], efnu[j,:], templgrid, template_error_grid, 
+                        zgrid, nphot_min, nband, ntempl, nz; interrupted_flag=interrupted
+                    )
+                    
+                    push!(batch_results, (j, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j))
+                    
+                    # Update progress bar
+                    increment!(progress_bar)
+                end
+                
+                return batch_results
             end
         end
         
-        # Store best-fit results
-        if best_z_idx > 0
-            zbest[j] = zgrid[best_z_idx]
-            chi2best[j] = best_chi2
-            coeffsbest[j,:] = best_coeffs
+        # Collect results as they complete
+        for (task_id, task) in enumerate(tasks)
+            if interrupted[] && !istaskdone(task)
+                # Skip waiting for unfinished tasks if interrupted
+                continue
+            end
+            
+            # Since individual object errors are now handled within fit_single_object,
+            # we can safely fetch results without batch-level error handling
+            batch_results = fetch(task)
+            
+            # Store results from this batch
+            for (j, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j) in batch_results
+                zbest[j] = zbest_j
+                chi2best[j] = chi2best_j
+                coeffsbest[j,:] = coeffsbest_j
+                chi2grid[j,:] = chi2_row_j
+            end
+        end
+        
+        # Finish progress bar
+        if interrupted[]
+            finish!(progress_bar, final_message="interrupted")
         else
-            zbest[j] = -1
-            chi2best[j] = -1
-            coeffsbest[j,:] .= 0
+            finish!(progress_bar)
+        end
+        
+    catch e
+        if isa(e, InterruptException)
+            interrupted[] = true
+            println("\n⚠️ Fitting interrupted by user. Processing results for completed objects...")
+        else
+            rethrow(e)
         end
     end
 
     
-    println("Collecting results")
-    pz = exp.(-0.5*chi2grid)
-    cpz = cumsum(pz, dims=2) ./ sum(pz, dims=2)
-    z_l95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.025)))]
-    z_l68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.160)))]
-    z_med = zgrid[map(argmin, eachrow(abs.(cpz .- 0.500)))]
-    z_u68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.840)))]
-    z_u95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.975)))]
+    pz, z_l95, z_l68, z_med, z_u68, z_u95 = with_spinner(() -> begin
+        pz = exp.(-0.5*chi2grid)
+        cpz = cumsum(pz, dims=2) ./ sum(pz, dims=2)
+        z_l95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.025)))]
+        z_l68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.160)))]
+        z_med = zgrid[map(argmin, eachrow(abs.(cpz .- 0.500)))]
+        z_u68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.840)))]
+        z_u95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.975)))]
+        return pz, z_l95, z_l68, z_med, z_u68, z_u95
+    end, "Calculating redshift statistics", "✅")
     
     bad_objs = sum(chi2grid .== -1, dims=2) .== nz
     zbest[bad_objs] .= -1
     chi2best[bad_objs] .= -1
 
-    photobest = zeros(nobj, nband)
-    @threads for j in 1:nobj
-        if zbest[j] > 0  # Only calculate for valid fits
-            z_idx = argmin(abs.(zgrid .- zbest[j]))
-            photobest[j,:] = transpose(templgrid[:,z_idx,:]) * coeffsbest[j,:]
+    photobest = with_spinner(() -> begin
+        photobest = zeros(nobj, nband)
+        @threads for j in 1:nobj
+            if zbest[j] > 0  # Only calculate for valid fits
+                z_idx = argmin(abs.(zgrid .- zbest[j]))
+                # Optimized: avoid transpose by manual matrix multiplication
+                for k in 1:nband
+                    photobest[j, k] = 0.0
+                    for t in 1:ntempl
+                        photobest[j, k] += templgrid[t, z_idx, k] * coeffsbest[j, t]
+                    end
+                end
+            end
         end
-    end
+        return photobest
+    end, "Calculating best-fit model photometry", "✅")
 
-    println("Writing summary output to $output_file:SUMMARY")
-    data = OrderedDict{String, Dict{String, Any}}()
-    data["ID"] = Dict("format" => "K", "data" => IDs)
-    data["z_best"] = Dict("format" => "E", "data" => zbest)
-    data["chi2"] = Dict("format" => "E", "data" => chi2best)
-    data["z_l95"] = Dict("format" => "E", "data" => z_l95)
-    data["z_l68"] = Dict("format" => "E", "data" => z_l68)
-    data["z_med"] = Dict("format" => "E", "data" => z_med)
-    data["z_u68"] = Dict("format" => "E", "data" => z_u68)
-    data["z_u95"] = Dict("format" => "E", "data" => z_u95)
-    for (i, band) in enumerate(bands)
-        data[band] = Dict("format" => "E", "unit" => "fnu", "data" => photobest[:,i])
-    end
-    data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
+    with_spinner(() -> begin
+        data = OrderedDict{String, Dict{String, Any}}()
+        data["ID"] = Dict("format" => "K", "data" => IDs)
+        data["z_best"] = Dict("format" => "E", "data" => zbest)
+        data["chi2"] = Dict("format" => "E", "data" => chi2best)
+        data["z_l95"] = Dict("format" => "E", "data" => z_l95)
+        data["z_l68"] = Dict("format" => "E", "data" => z_l68)
+        data["z_med"] = Dict("format" => "E", "data" => z_med)
+        data["z_u68"] = Dict("format" => "E", "data" => z_u68)
+        data["z_u95"] = Dict("format" => "E", "data" => z_u95)
+        for (i, band) in enumerate(bands)
+            data[band] = Dict("format" => "E", "unit" => "fnu", "data" => photobest[:,i])
+        end
+        data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
 
-    write_data(output_file, data, "SUMMARY")
+        write_data(output_file, data, "SUMMARY")
+    end, "Writing summary output to $output_file:SUMMARY", "💾")
 
     if output_pz
-        println("Writing P(z) output to $output_file:PZ")
-        temp_pz = pz ./ trapz(zgrid, pz)
-        temp_pz = vcat(transpose(zgrid), temp_pz)
-        temp_IDs = vcat([-1], IDs)
-        data = OrderedDict{String, Dict{String, Any}}()
-        data["ID"] = Dict("format" => "K", "data" => temp_IDs)
-        data["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
-        write_data(output_file, data, "PZ")
+        with_spinner(() -> begin
+            temp_pz = pz ./ trapz(zgrid, pz)
+            temp_pz = vcat(transpose(zgrid), temp_pz)
+            temp_IDs = vcat([-1], IDs)
+            data = OrderedDict{String, Dict{String, Any}}()
+            data["ID"] = Dict("format" => "K", "data" => temp_IDs)
+            data["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
+            write_data(output_file, data, "PZ")
+        end, "Writing P(z) output to $output_file:PZ", "💾")
     end
 
     if output_templ
-        println("Writing template output to $output_file:TEMPL")
         GC.gc()
-
-        # Everything will get interpolated to a common wavelength grid 
-        # Defined by the template with the largest wavelength array 
-        # (i.e., highest resolution/largest range)
-        common_templwav = nothing
-        for (i, templ) in enumerate(templates)
-            templwav_i, templfnu_i, templz_i = load_template(templ)
-            if common_templwav === nothing
-                common_templwav = templwav_i
-            elseif length(templwav_i) > length(common_templwav)
-                common_templwav = templwav_i
+        with_spinner(() -> begin
+            # Everything will get interpolated to a common wavelength grid 
+            # Defined by the template with the largest wavelength array 
+            # (i.e., highest resolution/largest range)
+            common_templwav = nothing
+            for (i, templ) in enumerate(templates)
+                templwav_i, templfnu_i, templz_i = load_template(templ)
+                if common_templwav === nothing
+                    common_templwav = templwav_i
+                elseif length(templwav_i) > length(common_templwav)
+                    common_templwav = templwav_i
+                end
             end
-        end
-        
-        idx  = searchsortedfirst(common_templwav, 1215.67)
-        nwav = length(common_templwav)
-                
-    
-        igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
-        igm_redshifts = igm_file["redshifts"][:]
-        igm_wavelengths = igm_file["wavelengths"][:]
-        igm_transmission = igm_file["transmission"][:,:]
-        close(igm_file)
-        idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
-
-        igm_grid = zeros(nz, nwav)
-        maxz = igm_redshifts[end]
-        pr = true
-
-        for i in 1:nz
-            z = zgrid[i]
             
-
-            # Interpolate the IGM transmission at this redshift
-            if z > maxz
-                if pr
-                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
-                    pr = false
-                end
-                iz_up = length(igm_redshifts)
-            else
-                iz_up = searchsortedfirst(igm_redshifts, z)
-            end
-            t = igm_transmission[iz_up,:]
-
-            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=Flat())
-            y1 = interp(common_templwav[1:idx-1])
-            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [t[idx_igm:end];1.0], extrapolation_bc=Flat())
-            y2 = interp(common_templwav[idx:end])
-            t  = [y1; y2]
-
-            igm_grid[i,:] = t
-        end
-
-        templfnu = zeros(nwav, nz, ntempl)
-        for i in 1:ntempl
-
-            templwav_i, templfnu_i, templz_i = load_template(templates[i])
-
-            if templz_i === nothing
-                # Interpolate the template to the common wavelength grid
-                interp = linear_interpolation(templwav_i, templfnu_i, extrapolation_bc=Flat())
-                templfnu_i = interp(common_templwav)
-            end
-
-            for j in 1:nz
-                z = zgrid[j]
-
-                transmission = igm_grid[j,:]
-                
-                if templz_i === nothing
-                    templfnu_j = templfnu_i .* transmission
-                else
-                    zindex = argmin(abs.(templz_i .- z))
-                    interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
-                    templfnu_j = interp(common_templwav) .* transmission
-                end
-
-                windex = argmin(abs.(common_templwav .- 1e4))
-                templfnu_j /= templfnu_j[windex]
-                
-                templfnu[:,j,i] = templfnu_j
+            idx  = searchsortedfirst(common_templwav, 1215.67)
+            nwav = length(common_templwav)
                     
-            end
-        end
         
-        data = OrderedDict{String, Dict{String, Any}}()
-        temp_zgrid = vcat([-1], zgrid)
-        data["z"] = Dict("format" => "E", "data" => temp_zgrid)
-        for (i, templ) in enumerate(templates)
-            templ_shortname = basename(templ)
-            templ_shortname = replace(templ_shortname, ".fits" => "")
-            temp_templfnu = vcat(transpose(common_templwav), transpose(templfnu[:,:,i]))
-            data[templ_shortname] = Dict("format" => "$(nwav)E", "data" => temp_templfnu)
-        end
-        write_data(output_file, data, "TEMPL")
+            igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
+            igm_redshifts = igm_file["redshifts"][:]
+            igm_wavelengths = igm_file["wavelengths"][:]
+            igm_transmission = igm_file["transmission"][:,:]
+            close(igm_file)
+            idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
+
+            igm_grid = zeros(nz, nwav)
+            maxz = igm_redshifts[end]
+            pr = true
+
+            for i in 1:nz
+                z = zgrid[i]
+                
+
+                # Interpolate the IGM transmission at this redshift
+                if z > maxz
+                    if pr
+                        println("⚠️ Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
+                        pr = false
+                    end
+                    iz_up = length(igm_redshifts)
+                else
+                    iz_up = searchsortedfirst(igm_redshifts, z)
+                end
+                t = igm_transmission[iz_up,:]
+
+                interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=Flat())
+                y1 = interp(common_templwav[1:idx-1])
+                interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [t[idx_igm:end];1.0], extrapolation_bc=Flat())
+                y2 = interp(common_templwav[idx:end])
+                t  = [y1; y2]
+
+                igm_grid[i,:] = t
+            end
+
+            templfnu = zeros(nwav, nz, ntempl)
+            for i in 1:ntempl
+
+                templwav_i, templfnu_i, templz_i = load_template(templates[i])
+
+                if templz_i === nothing
+                    # Interpolate the template to the common wavelength grid
+                    interp = linear_interpolation(templwav_i, templfnu_i, extrapolation_bc=Flat())
+                    templfnu_i = interp(common_templwav)
+                end
+
+                for j in 1:nz
+                    z = zgrid[j]
+
+                    transmission = igm_grid[j,:]
+                    
+                    if templz_i === nothing
+                        templfnu_j = templfnu_i .* transmission
+                    else
+                        zindex = argmin(abs.(templz_i .- z))
+                        interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
+                        templfnu_j = interp(common_templwav) .* transmission
+                    end
+
+                    windex = argmin(abs.(common_templwav .- 1e4))
+                    templfnu_j /= templfnu_j[windex]
+                    
+                    templfnu[:,j,i] = templfnu_j
+                        
+                end
+            end
+            
+            data = OrderedDict{String, Dict{String, Any}}()
+            temp_zgrid = vcat([-1], zgrid)
+            data["z"] = Dict("format" => "E", "data" => temp_zgrid)
+            for (i, templ) in enumerate(templates)
+                templ_shortname = basename(templ)
+                templ_shortname = replace(templ_shortname, ".fits" => "")
+                temp_templfnu = vcat(transpose(common_templwav), transpose(templfnu[:,:,i]))
+                data[templ_shortname] = Dict("format" => "$(nwav)E", "data" => temp_templfnu)
+            end
+            write_data(output_file, data, "TEMPL")
+        end, "Writing template output to $output_file:TEMPL", "💾")
     
     end
                 
@@ -689,9 +1237,11 @@ end
 
     
 
-function load_data(cat, bands, translate)
+function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Float64}, Matrix{Float64}, Vector{String}}
     """
     Load the photometric data from the catalog.
+    
+    Returns (fnu, efnu, bands) where fnu and efnu are nobj×nband matrices.
     """
     IDs = read(cat[2], "ID")
     nobj = length(IDs)
@@ -700,6 +1250,10 @@ function load_data(cat, bands, translate)
     all_cols = FITSIO.colnames(cat[2])
     bands = filter(b -> (translate[b]["flux"] in all_cols) && (translate[b]["error"] in all_cols), bands)
     nband = length(bands)
+
+    if nband == 0
+        throw(LazyError("No valid bands found in the catalog. Check the translate section in the parameter file."))
+    end
 
     fnu = zeros(nobj, nband)
     efnu = zeros(nobj, nband)
@@ -715,9 +1269,11 @@ function load_data(cat, bands, translate)
 end
 
 
-function set_sys_err(fnu, efnu, sys_err)
+function set_sys_err(fnu::Matrix{Float64}, efnu::Matrix{Float64}, sys_err::Float64)::Tuple{Matrix{Float64}, Matrix{Float64}}
     """
     Set the systematic error on the fluxes.
+    
+    Returns (fnu, efnu) with systematic errors added in quadrature.
     """
     if sys_err == 0.0
         return fnu, efnu
@@ -751,9 +1307,11 @@ function list_filters()
     end
 end
 
-function get_filter(nickname)
+function get_filter(nickname::String)::Tuple{Vector{Float64}, Vector{Float64}}
     """
     Get the filter transmission curve from the nickname.
+    
+    Returns (wavelength, transmission) vectors.
     """
 
     filter_directory = load_filters()
@@ -775,9 +1333,11 @@ function get_filter(nickname)
     end
 end
 
-function get_pivot_wavelengths(bands)
+function get_pivot_wavelengths(bands::Vector{String})::Vector{Float64}
     """
     Compute the pivot wavelengths for the given bands.
+    
+    Returns vector of pivot wavelengths in Angstroms.
     """
     nband = length(bands)
     pivot_wavs = zeros(nband)
@@ -939,9 +1499,11 @@ function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0
 end
 
 
-function load_template(file)
+function load_template(file::String)::Tuple{Vector{Float64}, Union{Vector{Float64}, Matrix{Float64}}, Union{Nothing, Vector{Float64}}}
     """
     Load a template from a file.
+    
+    Returns (wavelength, flux, redshift_grid) where redshift_grid is Nothing for non-redshift-dependent templates.
     """
 
     isfits = endswith(file, ".fits")

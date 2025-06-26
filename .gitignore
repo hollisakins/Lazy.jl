@@ -2,3 +2,11 @@
 .vscode/
 .DS_Store
 __pycache__/
+
+# Template cache files
+src/cache/
+*.fits
+
+# Test and temporary files
+test_*.toml
+param.toml

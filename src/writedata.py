@@ -2,19 +2,18 @@ from astropy.io import fits
 import os
 
 def write_data(filename, data, extname):
+    # If this is the first extension being written (SUMMARY), remove existing file
+    if extname == "SUMMARY" and os.path.exists(filename):
+        os.remove(filename)
+    
+    # Create file if it doesn't exist
     if not os.path.exists(filename):
-        with fits.open(filename, mode='append') as hdul:
-            # Create a new FITS file
-            hdu = fits.PrimaryHDU()
-            hdul.append(hdu)
-            hdul.flush()
+        # Create a new FITS file with just a primary HDU
+        hdu = fits.PrimaryHDU()
+        hdu.writeto(filename)
     
+    # Append the new extension
     with fits.open(filename, mode='append') as hdul:
-        # Check if the extension already exists
-        if extname in hdul:
-            # If it exists, remove it
-            del hdul[extname]
-    
         if type(data) == dict:
             # Create a FITS table with the specified columns
             coldefs = []

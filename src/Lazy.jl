@@ -35,6 +35,7 @@ function write_data(filename, data, extname)
     return writedata.write_data(filename, data, extname)
 end
 
+include("cache_utils.jl")
 include("main.jl")
 
 # CLI entry point with proper exception handling
