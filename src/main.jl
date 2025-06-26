@@ -1,5 +1,12 @@
-errno::Cint = 0
 supports_color(io) = get(io, :color, false)
+
+# Custom exception type for Lazy.jl
+struct LazyError <: Exception
+    msg::String
+    LazyError(msg::String) = new(msg)
+end
+
+Base.showerror(io::IO, e::LazyError) = print(io, "LazyError: ", e.msg)
 
 using TOML
 using FITSIO
@@ -17,22 +24,6 @@ igmpath = @__DIR__() * "/igm_data/"
 templatepath = @__DIR__() * "/templates/"
 filterpath = @__DIR__() * "/filter_files/"
 
-function panic(
-    msg::String, err::Union{Exception, Nothing} = nothing,
-    bt::Union{Vector{Base.StackFrame}, Nothing} = nothing
-)
-    printstyled(stderr, "ERROR: "; color = :red, bold = true)
-    print(stderr, msg)
-    if err !== nothing
-        print(stderr, sprint_showerror(err))
-    end
-    if bt !== nothing
-        Base.show_backtrace(stderr, bt)
-    end
-    println(stderr)
-    global errno = 1
-    return errno
-end
 
 function print_help(io, cmd::String = "main")
     printstyled(io, "Lazy.jl \n", bold = true)
@@ -73,7 +64,7 @@ function load_templates()
     Load the templates from the template directory.
     """
     if !isdir(templatepath)
-        panic("Template directory $templatepath not found.")
+        throw(LazyError("Template directory $templatepath not found"))
     end
     return TOML.parsefile(templatepath * "template_directory.toml")
 end
@@ -83,22 +74,19 @@ function load_filters()
     Load the filters from the filter directory.
     """
     if !isdir(filterpath)
-        panic("Filter directory $filterpath not found.")
+        throw(LazyError("Filter directory $filterpath not found"))
     end
     return TOML.parsefile(filterpath * "filter_directory.toml")
 end
 
-function main(argv)
-    
-    # Reset errno
-    global errno = 0
+function main(argv::Vector{String})
     
     io = stdout    
     if argv == []
         print_ascii(io)
         check_version()
         print_help(io)
-        return errno
+        return 0
     end
 
     # Parse command line arguments
@@ -110,7 +98,7 @@ function main(argv)
             print_ascii(io)
             check_version()        
             print_help(io)
-            return errno
+            return 0
         
         # 
         elseif x == "fit"
@@ -119,22 +107,22 @@ function main(argv)
 
             if argv == []
                 print_help(io, "fit")
-                return errno
+                return 0
             end
         
             y = popfirst!(argv)
 
             if y == "-p" || y == "--param"
                 if length(argv) < 1
-                    return panic("expected parameter file argument after `-p`")
+                    throw(LazyError("expected parameter file argument after `-p`"))
                 end
                 param = popfirst!(argv)
                 return fit(param)
             elseif y == "-h" || y == "--help"
                 print_help(io, "fit")
-                return errno
+                return 0
             else
-                return panic("unrecognized argument: $y")
+                throw(LazyError("unrecognized argument: $y"))
             end
 
 
@@ -155,11 +143,11 @@ function main(argv)
             
         else
             # Argument not recognized
-            return panic("unrecognized argument: $x")
+            throw(LazyError("unrecognized argument: $x"))
         end
     end
     if param == nothing
-        return panic("parameter file not specified. Use -p <param_file>")
+        throw(LazyError("parameter file not specified. Use -p <param_file>"))
     end
 
 end
@@ -202,10 +190,10 @@ function fit(param)
 
     # Load in TOML parameter file
     if !isfile(param)
-        return panic("parameter file $param not found.")
+        throw(LazyError("parameter file $param not found"))
     end
     if !endswith(param, ".toml")
-        return panic("parameter file $param must have a .toml extension.")
+        throw(LazyError("parameter file $param must have a .toml extension"))
     end
     println("Loading parameter file: $param")
     param = TOML.parsefile(param)
@@ -220,13 +208,13 @@ function fit(param)
             # Read the input catalog
             cat = FITS(input_catalog)
         else
-            panic("parameter `io.input_catalog` not found in the parameter file.")
+            throw(LazyError("parameter `io.input_catalog` not found in the parameter file"))
         end
 
         if haskey(io, "output_file")
             output_file = io["output_file"]
         else
-            panic("parameter `io.output_file` not found in the parameter file.")
+            throw(LazyError("parameter `io.output_file` not found in the parameter file"))
         end
 
         if haskey(io, "output_pz")
@@ -240,7 +228,7 @@ function fit(param)
             output_templ = false
         end
     else
-        panic("section `io` not found in the parameter file.")
+        throw(LazyError("section `io` not found in the parameter file"))
     end
 
     IDs = Int.(read(cat[2], "ID"))
@@ -249,7 +237,7 @@ function fit(param)
         
     println("====================================")
     if !haskey(param, "translate")
-        error("section `translate` not found in the parameter file.")
+        error("section `translate` not found in the parameter file")
     end
     
     translate = param["translate"]
@@ -264,7 +252,7 @@ function fit(param)
     println("efnu = " * summary(efnu))
 
     if !haskey(io, "missing_data_format")
-        panic("parameter `io.missing_data_format` not found in the parameter file.")
+        throw(LazyError("parameter `io.missing_data_format` not found in the parameter file"))
     end
     missing_data_format = io["missing_data_format"]
     if missing_data_format == "nan" || missing_data_format == "NaN"
@@ -278,7 +266,7 @@ function fit(param)
         fnu[condition] .= NaN
         efnu[condition] .= NaN
     else
-        println("Warning: unrecognized missing data format: $missing_data_format, using input catalog as is.")
+        println("Warning: unrecognized missing data format: $missing_data_format, using input catalog as is")
     end
 
         
@@ -288,30 +276,30 @@ function fit(param)
 
     
     if !haskey(param, "fitting")
-        panic("section `fitting` not found in the parameter file.")
+        throw(LazyError("section `fitting` not found in the parameter file"))
     end
 
     fitting = param["fitting"]
 
     if !haskey(fitting, "nphot_min")
-        panic("parameter `fitting.nphot_min` not found in the parameter file.")
+        throw(LazyError("parameter `fitting.nphot_min` not found in the parameter file"))
     end
     nphot_min = fitting["nphot_min"]
 
     if !haskey(fitting, "sys_err")
-        panic("parameter `fitting.sys_err` not found in the parameter file.")
+        throw(LazyError("parameter `fitting.sys_err` not found in the parameter file"))
     end
     sys_err = fitting["sys_err"]
     fnu, efnu = set_sys_err(fnu, efnu, sys_err)
 
     if !haskey(fitting, "z_min")
-        panic("parameter `fitting.z_min` not found in the parameter file.")
+        throw(LazyError("parameter `fitting.z_min` not found in the parameter file"))
     end
     if !haskey(fitting, "z_max")
-        panic("parameter `fitting.z_max` not found in the parameter file.")
+        throw(LazyError("parameter `fitting.z_max` not found in the parameter file"))
     end
     if !haskey(fitting, "z_step")
-        panic("parameter `fitting.z_step` not found in the parameter file.")
+        throw(LazyError("parameter `fitting.z_step` not found in the parameter file"))
     end
 
     z_min = fitting["z_min"]
@@ -327,7 +315,7 @@ function fit(param)
     println("====================================")
 
     if !haskey(fitting, "template_set")
-        panic("parameter `template_set` not found in the parameter file.")
+        throw(LazyError("parameter `template_set` not found in the parameter file"))
     end
 
     template_set = fitting["template_set"]
@@ -335,20 +323,20 @@ function fit(param)
     if template_set isa String
         template_directory = load_templates()
         if !haskey(template_directory, template_set)
-            panic("Template set $template_set not found in the template directory.")
+            throw(LazyError("Template set $template_set not found in the template directory"))
         end
         println("Template set: $template_set")
         templates = [joinpath(templatepath, file) for file in template_directory[template_set]["files"]]
     elseif template_set isa Vector{String}
         templates = [joinpath(templatepath, file) for file in template_set]
     else
-        panic("parameter `template_set` must be a string, defining the template set name, or a vector of strings, defining the paths to the template files to use.")
+        throw(LazyError("parameter `template_set` must be a string, defining the template set name, or a vector of strings, defining the paths to the template files to use"))
     end
 
     ntempl = length(templates)
     for templ in templates
         if !isfile(templ)
-            panic("Template file $templ not found in the templates directory.")
+            throw(LazyError("Template file $templ not found in the templates directory"))
         end
     end
 
@@ -372,7 +360,7 @@ function fit(param)
     
     # Load in IGM transmission data
     if !haskey(fitting, "igm_model")
-        error("parameter `igm_model` not found in the parameter file.")
+        error("parameter `igm_model` not found in the parameter file")
     end
     
     igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
@@ -399,7 +387,7 @@ function fit(param)
             # Interpolate the IGM transmission at this redshift
             if z > maxz
                 if pr
-                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
+                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
                     pr = false
                 end
                 iz_up = length(igm_redshifts)
@@ -442,11 +430,11 @@ function fit(param)
     end
    
     if !haskey(fitting, "template_error")
-        error("parameter `template_error` not found in the parameter file.")
+        error("parameter `template_error` not found in the parameter file")
     end
    
     if !haskey(fitting, "template_error_scale")
-        error("parameter `template_error_scale` not found in the parameter file.")
+        error("parameter `template_error_scale` not found in the parameter file")
     end
 
     template_error = fitting["template_error"]
@@ -470,7 +458,7 @@ function fit(param)
     println("Fitting by object (memory-optimized)")
     
     # Pre-compute template errors for all redshifts
-    println("Pre-computing template errors...")
+    println("Pre-computing template errors..")
     template_error_grid = precompute_template_errors(zgrid, pivot_wavs, tef_x, tef_y, 
                                                    tef_xmin, tef_xmax, tef_clip_min, tef_clip_max, 
                                                    template_error_scale)
@@ -630,7 +618,7 @@ function fit(param)
             # Interpolate the IGM transmission at this redshift
             if z > maxz
                 if pr
-                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz.")
+                    println("Warning: Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
                     pr = false
                 end
                 iz_up = length(igm_redshifts)
@@ -696,7 +684,7 @@ function fit(param)
     
 
 
-    return errno
+    return 0
 end
 
     
@@ -758,7 +746,7 @@ function list_filters()
         print(rpad(filter_name, 25))
         println(filter_description)
         if !isfile(filterpath * filter_name)
-            panic("Filter file $filter_name not found.")
+            throw(LazyError("Filter file $filter_name not found"))
         end
     end
 end
@@ -783,7 +771,7 @@ function get_filter(nickname)
         filt = readdlm(filterpath * real_name)
         return filt[:,1], filt[:,2]
     else
-        return panic("Filter '$nickname' not found.")
+        throw(LazyError("Filter '$nickname' not found"))
     end
 end
 
@@ -813,7 +801,7 @@ function list_templates()
         template_files = template_directory[template_set_name]["files"]
         for template_file in template_files
             if !isfile(templatepath * template_file)
-                panic("Template file $template_file not found.")
+                throw(LazyError("Template file $template_file not found"))
             end
         end
         nfiles = length(template_files)
@@ -840,7 +828,7 @@ function params()
     """
     param_file = @__DIR__() * "/example_params.toml"
     if !isfile(param_file)
-        panic("Parameter file $param_file not found.")
+        throw(LazyError("Parameter file $param_file not found"))
     end
     f = readlines(param_file)
     for line in f
@@ -868,7 +856,7 @@ function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0
 
     if !isnothing(old_errs)
         if length(old_errs) != length(old_fluxes)
-            panic("old_fluxes and old_errs must be the same length")
+            throw(LazyError("old_fluxes and old_errs must be the same length"))
         else
             new_errs = copy(new_fluxes)
         end

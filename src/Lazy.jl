@@ -1,5 +1,7 @@
 module Lazy
 
+export LazyError, main, templatepath, filterpath
+
 const version = string(pkgversion(@__MODULE__))
 
 using LinearAlgebra: BLAS
@@ -35,7 +37,26 @@ end
 
 include("main.jl")
 
+# CLI entry point with proper exception handling
+function julia_main()::Cint
+    try
+        return main(copy(ARGS))
+    catch e
+        if isa(e, LazyError)
+            printstyled(stderr, "ERROR: "; color = :red, bold = true)
+            println(stderr, e.msg)
+            return 1
+        else
+            printstyled(stderr, "UNEXPECTED ERROR: "; color = :red, bold = true)
+            println(stderr, sprint(showerror, e))
+            Base.show_backtrace(stderr, catch_backtrace())
+            return 1
+        end
+    end
+end
+
 # Precompile the entry points
-@assert precompile(main, (Cint,))
+@assert precompile(main, (Vector{String},))
+@assert precompile(julia_main, ())
 
 end
