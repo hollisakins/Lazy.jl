@@ -542,7 +542,7 @@ function precompute_template_errors(zgrid::Vector{Float64}, pivot_wavs::Vector{F
         pivot_wavs_rest = pivot_wavs ./ (1 + z)
         
         # Interpolate template error function
-        tef_interp = linear_interpolation(tef_x, tef_y, extrapolation_bc=Flat())
+        tef_interp = linear_interpolation(tef_x, tef_y, extrapolation_bc=0.0)
         tefz = tef_interp(pivot_wavs_rest)
         
         # Apply clipping
@@ -864,9 +864,9 @@ function fit(param)
 
             transmission = igm_transmission[iz_up,:]
 
-            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
+            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=0.0)
             y1 = interp(templwav_i[1:idx-1])
-            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
+            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=0.0)
             y2 = interp(templwav_i[idx:end])
             transmission  = [y1; y2]
 
@@ -887,7 +887,7 @@ function fit(param)
                 band = bands[k]
                 fwav, ftrans = get_filter(band)
                 nu = 1 ./ fwav
-                interp = linear_interpolation(wav_obs, templfnu_j)
+                interp = linear_interpolation(wav_obs, templfnu_j, extrapolation_bc=0.0)
                 fnu_interp = interp(fwav)
             
                 result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
@@ -1174,9 +1174,9 @@ function fit(param)
                 end
                 t = igm_transmission[iz_up,:]
 
-                interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=Flat())
+                interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=0.0)
                 y1 = interp(common_templwav[1:idx-1])
-                interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [t[idx_igm:end];1.0], extrapolation_bc=Flat())
+                interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [t[idx_igm:end];1.0], extrapolation_bc=0.0)
                 y2 = interp(common_templwav[idx:end])
                 t  = [y1; y2]
 
@@ -1190,7 +1190,7 @@ function fit(param)
 
                 if templz_i === nothing
                     # Interpolate the template to the common wavelength grid
-                    interp = linear_interpolation(templwav_i, templfnu_i, extrapolation_bc=Flat())
+                    interp = linear_interpolation(templwav_i, templfnu_i, extrapolation_bc=0.0)
                     templfnu_i = interp(common_templwav)
                 end
 
@@ -1203,7 +1203,7 @@ function fit(param)
                         templfnu_j = templfnu_i .* transmission
                     else
                         zindex = argmin(abs.(templz_i .- z))
-                        interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
+                        interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=0.0)
                         templfnu_j = interp(common_templwav) .* transmission
                     end
 
@@ -1402,7 +1402,7 @@ function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0
     """
     Interpolate a spectrum to a new wavelength grid.
     """
-    # interp = linear_interpolation(wav_old, flux_old, extrapolation_bc=Flat())
+    # interp = linear_interpolation(wav_old, flux_old, extrapolation_bc=0.0)
     # flux_new = interp(wav_new)
     # return flux_new
 
