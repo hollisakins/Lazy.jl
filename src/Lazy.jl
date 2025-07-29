@@ -36,6 +36,8 @@ function write_data(filename, data, extname)
 end
 
 include("cache_utils.jl")
+include("template_grid.jl")
+include("hdf5_streaming.jl")
 include("main.jl")
 
 # CLI entry point with proper exception handling

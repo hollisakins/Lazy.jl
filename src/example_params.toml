@@ -9,7 +9,7 @@
     # Format for missing data in the input catalog (e.g. 'nan' or -99) 
     missing_data_format = 'nan' 
 
-    # Name of the output fits file 
+    # Name of the output file (format determined by extension: .fits, .h5, .hdf5)
     output_file = '/path/to/lazy_results.fits'
     
     # Whether to output the redshift probability distribution for each object
@@ -57,6 +57,13 @@
     # Template grid caching (default: true)
     # Caches template grids to speed up subsequent runs with same parameters
     template_cache = true
+
+[runtime] 
+    # Memory-efficient chunked processing for large datasets
+    # Enables processing of datasets larger than available memory with resume capability
+    chunked_processing = false             # Enable chunked processing (default: false)
+    target_memory_gb = 0.5                 # Target memory usage per chunk (default: 0.5)
+    preserve_work_file = false             # Keep intermediate .work.h5 file (default: false)
 
 [translate]
     # Tells the code which columns in the input catalog to use for the fluxes 

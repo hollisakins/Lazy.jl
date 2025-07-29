@@ -39,7 +39,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         # Pre-allocate working arrays to avoid repeated allocations
         templgrid_ij = Matrix{Float64}(undef, nband, ntempl)
         fnu_mod_j = Vector{Float64}(undef, nband)
-        chi2_row = Vector{Float64}(undef, nz)
+        chi2_row = Vector{Float32}(undef, nz)
         
         # Track best fit for this object
         best_chi2 = Inf
@@ -145,7 +145,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         zbest_failed = -1.0
         chi2best_failed = -1.0
         coeffsbest_failed = zeros(ntempl)
-        chi2_row_failed = fill(-1.0, nz)
+        chi2_row_failed = fill(Float32(-1.0), nz)
         
         return (zbest_failed, chi2best_failed, coeffsbest_failed, chi2_row_failed)
     end
@@ -165,7 +165,7 @@ mutable struct ProgressBar
     
     function ProgressBar(total::Int, description::String; 
                         show_rate::Bool=true, show_eta::Bool=true, 
-                        bar_width::Int=20, prefix_emoji::String="🧠")
+                        bar_width::Int=30, prefix_emoji::String="🧠")
         new(total, Atomic{Int}(0), description, time(), Ref(time()), 
             show_rate, show_eta, bar_width, prefix_emoji)
     end
@@ -277,10 +277,15 @@ function display_progress(pb::ProgressBar)
                 
                 display_str *= ", ETA: $eta_str"
             end
+        elseif current == 0
+            # Show initial message when no progress yet
+            if pb.show_rate || pb.show_eta
+                display_str *= "; starting..."
+            end
         end
     end
     
-    display_str *= ")"
+    display_str *= ")   "
     
     # Clear line and print
     print("\r$display_str")
@@ -363,7 +368,7 @@ function with_spinner(operation::Function, message::String, success_emoji::Strin
             wait(spinner_task)
             # Clear the spinner line completely and print error message
             clear_line = "\r" * " "^max_line_length[] * "\r"
-            print("$clear_line❌ $message (failed)\n")
+            print(clear_line * "❌ $message (failed)\n")
             flush(stdout)
             rethrow(e)
         end
@@ -409,7 +414,7 @@ function print_ascii(io)
     else
         println("v$version (1 thread)")
     end
-    println("====================================")
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
 
 function load_templates()
@@ -565,8 +570,8 @@ function estimate_memory_usage(nobj::Int, nz::Int, nband::Int, ntempl::Int)::Dic
     # Template grid: ntempl × nz × nband × 8 bytes (Float64)
     templgrid_gb = (ntempl * nz * nband * 8) / (1024^3)
     
-    # Chi2 grid: nobj × nz × 8 bytes (Float64)  
-    chi2grid_gb = (nobj * nz * 8) / (1024^3)
+    # Chi2 grid: nobj × nz × 4 bytes (Float32)  
+    chi2grid_gb = (nobj * nz * 4) / (1024^3)
     
     # Template error grid: nz × nband × 8 bytes (Float64)
     template_error_gb = (nz * nband * 8) / (1024^3)
@@ -595,31 +600,31 @@ function estimate_memory_usage(nobj::Int, nz::Int, nband::Int, ntempl::Int)::Dic
     )
 end
 
-function print_memory_estimate(mem_dict::Dict{String, Float64})
+function print_memory_estimate(mem_dict::Dict{String, Float64}; chunked_processing::Bool=false, target_memory_gb::Float64=0.5)
     """
     Print a formatted memory usage estimate.
     """
-    println("====================================")
-    println("Memory Usage Estimate:")
-    println("  Template grid:      $(round(mem_dict["template_grid"], digits=2)) GB")
-    println("  Chi2 grid:          $(round(mem_dict["chi2_grid"], digits=2)) GB") 
-    println("  Template errors:    $(round(mem_dict["template_error_grid"], digits=2)) GB")
-    println("  Coefficients:       $(round(mem_dict["coefficients"], digits=2)) GB")
-    println("  Photometric data:   $(round(mem_dict["photometric_data"], digits=2)) GB")
-    println("  Working arrays:     $(round(mem_dict["working_arrays"], digits=2)) GB")
-    println("  ----------------------------------------")
-    println("  Estimated peak:     $(round(mem_dict["estimated_peak"], digits=2)) GB")
-    
-    if mem_dict["estimated_peak"] > 16.0
-        println("  ⚠️  WARNING: High memory usage detected!")
-        println("     Consider reducing parameter space if system has <$(round(mem_dict["estimated_peak"] * 1.2, digits=1))GB RAM")
-    elseif mem_dict["estimated_peak"] > 8.0
-        println("  ⚠️  CAUTION: Moderate memory usage.")
-        println("     Monitor system memory during fitting.")
+    if chunked_processing
+        peak_gb = mem_dict["estimated_peak"]
+        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        println("📊 Memory: ~$(round(peak_gb, digits=2)) GB peak (chunked processing enabled, ~$(target_memory_gb) GB per chunk)")
+        
+        if peak_gb > 32.0
+            println("   ⚠️  WARNING: Very high memory usage detected! Consider reducing chunk size")
+        elseif peak_gb > 16.0  
+            println("   ⚠️  CAUTION: High memory usage detected!")
+        end
     else
-        println("  ✅ Memory usage looks reasonable.")
+        peak_gb = mem_dict["estimated_peak"]
+        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        println("📊 Memory: ~$(round(peak_gb, digits=2)) GB peak")
+        
+        if peak_gb > 32.0
+            println("   ⚠️  WARNING: Very high memory usage detected! Consider using chunked processing")
+        elseif peak_gb > 16.0  
+            println("   ⚠️  CAUTION: High memory usage detected! Consider using chunked processing")
+        end
     end
-    println("====================================")
 end
 
 function fit(param)
@@ -665,11 +670,48 @@ function fit(param)
         throw(LazyError("section `io` not found in the parameter file"))
     end
 
+    # Parse runtime configuration
+    chunked_processing = false
+    target_memory_gb = 0.5
+    preserve_work_file = false
+    
+    if haskey(param, "runtime")
+        runtime = param["runtime"]
+        
+        if haskey(runtime, "chunked_processing")
+            chunked_processing = runtime["chunked_processing"]
+        end
+        
+        if haskey(runtime, "target_memory_gb")
+            target_memory_gb = runtime["target_memory_gb"]
+            if target_memory_gb <= 0
+                throw(LazyError("runtime.target_memory_gb must be positive"))
+            end
+        end
+        
+        if haskey(runtime, "preserve_work_file")
+            preserve_work_file = runtime["preserve_work_file"]
+        end
+        
+        # # Provide user feedback about runtime configuration
+        # if chunked_processing
+        #     println("⚙️ Runtime: Chunked processing enabled")
+        #     println("   Target memory: $(target_memory_gb) GB per chunk")
+        #     if preserve_work_file
+        #         println("   Work file preservation: enabled")
+        #     end
+        # else
+        #     println("⚙️ Runtime: In-memory processing (default)")
+        # end
+        # else
+        # println("⚙️ Runtime: In-memory processing (default)")
+    end
+
     IDs = Int.(read(cat[2], "ID"))
     nobj = length(IDs)
     println("📊 Objects: $nobj")
         
-    println("====================================")
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     if !haskey(param, "translate")
         throw(LazyError("section `translate` not found in the parameter file"))
     end
@@ -706,7 +748,7 @@ function fit(param)
         
 
 
-    println("====================================")
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     
     if !haskey(param, "fitting")
@@ -744,7 +786,7 @@ function fit(param)
     zgrid = collect(range(z_min, stop=z_max, step=z_step))
     nz = length(zgrid)
 
-    println("====================================")
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     if !haskey(fitting, "template_set")
         throw(LazyError("parameter `template_set` not found in the parameter file"))
@@ -771,10 +813,6 @@ function fit(param)
             throw(LazyError("Template file $templ not found in the templates directory"))
         end
     end
-
-    # Estimate and report memory usage
-    memory_estimate = estimate_memory_usage(nobj, nz, nband, ntempl)
-    print_memory_estimate(memory_estimate)
 
     # Print out the templates for the user 
     for (i, templ) in enumerate(templates)
@@ -809,128 +847,33 @@ function fit(param)
         end
     end
     
+    # Estimate and report memory usage
+    memory_estimate = estimate_memory_usage(nobj, nz, nband, ntempl)
+    print_memory_estimate(memory_estimate; chunked_processing=chunked_processing, target_memory_gb=target_memory_gb)
+
     # Build template grid if not loaded from cache
     if templgrid === nothing
-        templgrid = zeros(ntempl, nz, nband)
+        if !haskey(fitting, "igm_model")
+            throw(LazyError("parameter `igm_model` not found in the parameter file"))
+        end
+        
+        # Use unified template grid builder for photometry mode
+        templgrid, template_error_grid_new, _ = build_template_grid(
+            templates, zgrid, fitting["igm_model"], fitting;
+            output_type=:photometry, bands=bands
+        )
+        
+        # Use newly built template error grid if not loaded from cache
+        if template_error_grid === nothing  
+            template_error_grid = template_error_grid_new
+        end
+        
+        # Report template grid size
         templgrid_size_gb = sizeof(templgrid) / (1024^3)
-        println("🧠 Building template grid: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
+        println("✅ Template grid built: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
         if templgrid_size_gb > 8.0
             println("⚠️ Large template grid detected. Consider reducing nz, nband, or ntempl if memory issues occur.")
         end
-        
-        # Initialize progress bar for template processing
-        template_progress = ProgressBar(ntempl, "Loading templates...", 
-                                       show_rate=false, show_eta=false, 
-                                       prefix_emoji="📊")
-        
-        # Load in IGM transmission data
-    if !haskey(fitting, "igm_model")
-        throw(LazyError("parameter `igm_model` not found in the parameter file"))
-    end
-    
-    igm_redshifts, igm_wavelengths, igm_transmission = with_spinner(() -> begin
-        igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
-        redshifts = igm_file["redshifts"][:]
-        wavelengths = igm_file["wavelengths"][:]
-        transmission = igm_file["transmission"][:,:]
-        close(igm_file)
-        return redshifts, wavelengths, transmission
-    end, "Loading IGM model: $(fitting["igm_model"])", "🌌")
-    idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
-    maxz = igm_redshifts[end]
-    pr = true
-
-    for i in 1:ntempl
-
-        templ_shortname = basename(templates[i])
-        templwav_i, templfnu_i, templz_i = load_template(templates[i])
-        idx  = searchsortedfirst(templwav_i, 1215.67)
-        
-        @threads for j in 1:nz
-            z = zgrid[j]
-
-            wav_obs = templwav_i .* (1+z)
-            
-            # Interpolate the IGM transmission at this redshift
-            if z > maxz
-                if pr
-                    println("⚠️ Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
-                    pr = false
-                end
-                iz_up = length(igm_redshifts)
-            else
-                iz_up = searchsortedfirst(igm_redshifts, z)
-            end
-
-            transmission = igm_transmission[iz_up,:]
-
-            interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;transmission[1:idx_igm-1]], extrapolation_bc=Flat())
-            y1 = interp(templwav_i[1:idx-1])
-            interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [transmission[idx_igm:end];1.0], extrapolation_bc=Flat())
-            y2 = interp(templwav_i[idx:end])
-            transmission  = [y1; y2]
-
-            if templz_i === nothing
-                templfnu_j = templfnu_i .* transmission
-            else
-                zindex = argmin(abs.(templz_i .- z))
-                templfnu_j = templfnu_i[:,zindex] .* transmission
-            end
-
-            # normalize template to rest-1micron (helps with numerical stability)
-            windex = argmin(abs.(templwav_i .- 1e4))
-            templfnu_j /= templfnu_j[windex]
-
-            # Sequential loop over bands (removed nested threading for thread safety)
-            for k in 1:nband
-                
-                band = bands[k]
-                fwav, ftrans = get_filter(band)
-                nu = 1 ./ fwav
-                interp = linear_interpolation(wav_obs, templfnu_j)
-                fnu_interp = interp(fwav)
-            
-                result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
-                templgrid[i,j,k] = result
-
-            end
-        end
-        
-        # Update template progress
-        increment!(template_progress, force=true)
-    end
-        # Finish template progress bar
-        finish!(template_progress)
-    end  # End of if templgrid === nothing
-    
-    # Build template error grid if not loaded from cache
-    if template_error_grid === nothing
-        if !haskey(fitting, "template_error")
-            throw(LazyError("parameter `template_error` not found in the parameter file"))
-        end
-       
-        if !haskey(fitting, "template_error_scale")
-            throw(LazyError("parameter `template_error_scale` not found in the parameter file"))
-        end
-
-        template_error = fitting["template_error"]
-        template_error_scale = fitting["template_error_scale"]
-        println("Template error: $template_error")
-
-        tef = readdlm(templatepath * "template_error/" * template_error * ".dat")
-        tef_x = tef[:,1]
-        tef_y = tef[:,2]
-        tef_xmin = minimum(tef_x[tef_y .> 0])
-        tef_xmax = maximum(tef_x[tef_y .> 0])
-        tef_clip_min = tef_y[tef_y .> 0][1]
-        tef_clip_max = tef_y[tef_y .> 0][end]
-        println("TEF x range: $tef_xmin - $tef_xmax")
-        println("TEF y range: $tef_clip_min - $tef_clip_max")
-        pivot_wavs = get_pivot_wavelengths(bands)
-
-        println("Building template error grid..")
-        template_error_grid = precompute_template_errors(zgrid, pivot_wavs, tef_x, tef_y, 
-            tef_xmin, tef_xmax, tef_clip_min, tef_clip_max, template_error_scale)
         
         # Save to cache if grid was just built and caching is enabled
         if use_cache && cache_key != ""
@@ -951,290 +894,16 @@ function fit(param)
         end
     end
 
-    println("===========================")
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     
     # Template grids are now ready (either from cache or newly built)
     
-    println("🧠 Fitting by object")
-    # Initialize arrays - keep chi2grid for P(z), eliminate massive coeffs array
-    chi2grid = zeros(nobj, nz)  # Keep for P(z) - only (nobj × nz)
-    zbest = zeros(nobj)
-    chi2best = zeros(nobj) 
-    coeffsbest = zeros(nobj, ntempl)  # Only store best-fit coefficients
-    
-    # Memory usage warning
-    chi2grid_size_gb = sizeof(chi2grid) / (1024^3)
-    total_fitting_memory_gb = chi2grid_size_gb + sizeof(coeffsbest) / (1024^3)
-    if total_fitting_memory_gb > 4.0
-        println("⚠️ Large fitting arrays detected (~$(round(total_fitting_memory_gb, digits=2)) GB). Monitor memory usage.")
-    end
-    
-    # Process each object individually using @spawn for better control
-    # println("🧠 Fitting $nobj objects (press Ctrl+C to interrupt)")
-    
-    # Set up interrupt handling
-    interrupted = Ref(false)
-    
-    # Set up signal handler for clean interruption
-    try
-        # Set up interrupt detection (simplified approach)
-        
-        # Launch fitting tasks with dynamic work distribution
-        nthreads_to_use = min(Threads.nthreads(), nobj)
-        
-        # Optimize batch size: balance between task overhead and load balancing
-        # Use larger batches for many objects, smaller for few objects
-        objects_per_task = max(1, min(100, nobj ÷ (nthreads_to_use * 4)))
-        ntasks = cld(nobj, objects_per_task)  # ceiling division
-        
-        println("⚙️ Using $nthreads_to_use threads, $ntasks tasks ($objects_per_task objects/task)")
-        
-        # Initialize progress bar for fitting
-        progress_bar = ProgressBar(nobj, "Fitting...", 
-                                  show_rate=true, show_eta=true, 
-                                  prefix_emoji="🧠")
-        
-        # Create batched tasks for better efficiency
-        tasks = Vector{Task}(undef, ntasks)
-        for task_id in 1:ntasks
-            start_obj = (task_id - 1) * objects_per_task + 1
-            end_obj = min(task_id * objects_per_task, nobj)
-            object_range = start_obj:end_obj
-            
-            tasks[task_id] = Threads.@spawn begin
-                # Results for this batch
-                batch_results = Vector{Tuple{Int, Float64, Float64, Vector{Float64}, Vector{Float64}}}()
-                
-                for j in object_range
-                    # Check for interruption before starting work
-                    if interrupted[]
-                        push!(batch_results, (j, -1.0, -1.0, zeros(ntempl), fill(-1.0, nz)))
-                        continue
-                    end
-                    
-                    # Fit this object
-                    zbest_j, chi2best_j, coeffsbest_j, chi2_row_j = fit_single_object(
-                        j, fnu[j,:], efnu[j,:], templgrid, template_error_grid, 
-                        zgrid, nphot_min, nband, ntempl, nz; interrupted_flag=interrupted
-                    )
-                    
-                    push!(batch_results, (j, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j))
-                    
-                    # Update progress bar
-                    increment!(progress_bar)
-                end
-                
-                return batch_results
-            end
-        end
-        
-        # Collect results as they complete
-        for (task_id, task) in enumerate(tasks)
-            if interrupted[] && !istaskdone(task)
-                # Skip waiting for unfinished tasks if interrupted
-                continue
-            end
-            
-            # Since individual object errors are now handled within fit_single_object,
-            # we can safely fetch results without batch-level error handling
-            batch_results = fetch(task)
-            
-            # Store results from this batch
-            for (j, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j) in batch_results
-                zbest[j] = zbest_j
-                chi2best[j] = chi2best_j
-                coeffsbest[j,:] = coeffsbest_j
-                chi2grid[j,:] = chi2_row_j
-            end
-        end
-        
-        # Finish progress bar
-        if interrupted[]
-            finish!(progress_bar, final_message="interrupted")
-        else
-            finish!(progress_bar)
-        end
-        
-    catch e
-        if isa(e, InterruptException)
-            interrupted[] = true
-            println("\n⚠️ Fitting interrupted by user. Processing results for completed objects...")
-        else
-            rethrow(e)
-        end
-    end
-
-    
-    pz, z_l95, z_l68, z_med, z_u68, z_u95 = with_spinner(() -> begin
-        pz = exp.(-0.5*chi2grid)
-        cpz = cumsum(pz, dims=2) ./ sum(pz, dims=2)
-        z_l95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.025)))]
-        z_l68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.160)))]
-        z_med = zgrid[map(argmin, eachrow(abs.(cpz .- 0.500)))]
-        z_u68 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.840)))]
-        z_u95 = zgrid[map(argmin, eachrow(abs.(cpz .- 0.975)))]
-        return pz, z_l95, z_l68, z_med, z_u68, z_u95
-    end, "Calculating redshift statistics", "✅")
-    
-    bad_objs = sum(chi2grid .== -1, dims=2) .== nz
-    zbest[bad_objs] .= -1
-    chi2best[bad_objs] .= -1
-
-    photobest = with_spinner(() -> begin
-        photobest = zeros(nobj, nband)
-        @threads for j in 1:nobj
-            if zbest[j] > 0  # Only calculate for valid fits
-                z_idx = argmin(abs.(zgrid .- zbest[j]))
-                # Optimized: avoid transpose by manual matrix multiplication
-                for k in 1:nband
-                    photobest[j, k] = 0.0
-                    for t in 1:ntempl
-                        photobest[j, k] += templgrid[t, z_idx, k] * coeffsbest[j, t]
-                    end
-                end
-            end
-        end
-        return photobest
-    end, "Calculating best-fit model photometry", "✅")
-
-    with_spinner(() -> begin
-        data = OrderedDict{String, Dict{String, Any}}()
-        data["ID"] = Dict("format" => "K", "data" => IDs)
-        data["z_best"] = Dict("format" => "E", "data" => zbest)
-        data["chi2"] = Dict("format" => "E", "data" => chi2best)
-        data["z_l95"] = Dict("format" => "E", "data" => z_l95)
-        data["z_l68"] = Dict("format" => "E", "data" => z_l68)
-        data["z_med"] = Dict("format" => "E", "data" => z_med)
-        data["z_u68"] = Dict("format" => "E", "data" => z_u68)
-        data["z_u95"] = Dict("format" => "E", "data" => z_u95)
-        for (i, band) in enumerate(bands)
-            data[band] = Dict("format" => "E", "unit" => "fnu", "data" => photobest[:,i])
-        end
-        data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
-
-        write_data(output_file, data, "SUMMARY")
-    end, "Writing summary output to $output_file:SUMMARY", "💾")
-
-    if output_pz
-        with_spinner(() -> begin
-            temp_pz = pz ./ trapz(zgrid, pz)
-            temp_pz = vcat(transpose(zgrid), temp_pz)
-            temp_IDs = vcat([-1], IDs)
-            data = OrderedDict{String, Dict{String, Any}}()
-            data["ID"] = Dict("format" => "K", "data" => temp_IDs)
-            data["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
-            write_data(output_file, data, "PZ")
-        end, "Writing P(z) output to $output_file:PZ", "💾")
-    end
-
-    if output_templ
-        GC.gc()
-        with_spinner(() -> begin
-            # Everything will get interpolated to a common wavelength grid 
-            # Defined by the template with the largest wavelength array 
-            # (i.e., highest resolution/largest range)
-            common_templwav = nothing
-            for (i, templ) in enumerate(templates)
-                templwav_i, templfnu_i, templz_i = load_template(templ)
-                if common_templwav === nothing
-                    common_templwav = templwav_i
-                elseif length(templwav_i) > length(common_templwav)
-                    common_templwav = templwav_i
-                end
-            end
-            
-            idx  = searchsortedfirst(common_templwav, 1215.67)
-            nwav = length(common_templwav)
-                    
-        
-            igm_file = h5open(igmpath * fitting["igm_model"] * ".hdf5", "r")
-            igm_redshifts = igm_file["redshifts"][:]
-            igm_wavelengths = igm_file["wavelengths"][:]
-            igm_transmission = igm_file["transmission"][:,:]
-            close(igm_file)
-            idx_igm = searchsortedfirst(igm_wavelengths, 1215.67)
-
-            igm_grid = zeros(nz, nwav)
-            maxz = igm_redshifts[end]
-            pr = true
-
-            for i in 1:nz
-                z = zgrid[i]
-                
-
-                # Interpolate the IGM transmission at this redshift
-                if z > maxz
-                    if pr
-                        println("⚠️ Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
-                        pr = false
-                    end
-                    iz_up = length(igm_redshifts)
-                else
-                    iz_up = searchsortedfirst(igm_redshifts, z)
-                end
-                t = igm_transmission[iz_up,:]
-
-                interp = linear_interpolation([0.0;igm_wavelengths[1:idx_igm-1]], [0.0;t[1:idx_igm-1]], extrapolation_bc=Flat())
-                y1 = interp(common_templwav[1:idx-1])
-                interp = linear_interpolation([igm_wavelengths[idx_igm:end];1226.0], [t[idx_igm:end];1.0], extrapolation_bc=Flat())
-                y2 = interp(common_templwav[idx:end])
-                t  = [y1; y2]
-
-                igm_grid[i,:] = t
-            end
-
-            templfnu = zeros(nwav, nz, ntempl)
-            for i in 1:ntempl
-
-                templwav_i, templfnu_i, templz_i = load_template(templates[i])
-
-                if templz_i === nothing
-                    # Interpolate the template to the common wavelength grid
-                    interp = linear_interpolation(templwav_i, templfnu_i, extrapolation_bc=Flat())
-                    templfnu_i = interp(common_templwav)
-                end
-
-                for j in 1:nz
-                    z = zgrid[j]
-
-                    transmission = igm_grid[j,:]
-                    
-                    if templz_i === nothing
-                        templfnu_j = templfnu_i .* transmission
-                    else
-                        zindex = argmin(abs.(templz_i .- z))
-                        interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
-                        templfnu_j = interp(common_templwav) .* transmission
-                    end
-
-                    windex = argmin(abs.(common_templwav .- 1e4))
-                    templfnu_j /= templfnu_j[windex]
-                    
-                    templfnu[:,j,i] = templfnu_j
-                        
-                end
-            end
-            
-            data = OrderedDict{String, Dict{String, Any}}()
-            temp_zgrid = vcat([-1], zgrid)
-            data["z"] = Dict("format" => "E", "data" => temp_zgrid)
-            for (i, templ) in enumerate(templates)
-                templ_shortname = basename(templ)
-                templ_shortname = replace(templ_shortname, ".fits" => "")
-                temp_templfnu = vcat(transpose(common_templwav), transpose(templfnu[:,:,i]))
-                data[templ_shortname] = Dict("format" => "$(nwav)E", "data" => temp_templfnu)
-            end
-            write_data(output_file, data, "TEMPL")
-        end, "Writing template output to $output_file:TEMPL", "💾")
-    
-    end
-                
-    
-
-
-    return 0
+    # Always use fit_streaming() - it handles both chunked and in-memory modes
+    return fit_streaming(param, templgrid, template_error_grid, zgrid, bands, 
+                       templates, nobj, nz, nband, ntempl, fnu, efnu, IDs,
+                       nphot_min, output_file, output_pz, output_templ,
+                       target_memory_gb, preserve_work_file, chunked_processing)
 end
-
     
 
 function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Float64}, Matrix{Float64}, Vector{String}}
