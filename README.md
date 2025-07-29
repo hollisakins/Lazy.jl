@@ -2,7 +2,7 @@
 
 **Fast, scalable photometric redshift fitting in Julia**
 
-Lazy.jl is a multithreaded photometric redshift fitting package designed for modern astronomical surveys. Built from the ground up in Julia, it provides memory-efficient processing of large catalogs with built-in fault tolerance and resume capability.
+Lazy.jl is a multithreaded photometric redshift fitting package designed for modern astronomical surveys. Built from the ground up in Julia, it provides memory-efficient and multithreaded processing of large catalogs.
 
 [![Julia 1.12+](https://img.shields.io/badge/julia-1.12+-blue.svg)](https://julialang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -18,40 +18,31 @@ Lazy.jl is a multithreaded photometric redshift fitting package designed for mod
 - [Output Formats](#output-formats)
 - [Performance & Scaling](#performance--scaling)
 - [Examples](#examples)
-- [Technical Details](#technical-details)
-- [Troubleshooting](#troubleshooting)
 - [Development](#development)
 
 ## Key Features
 
-### 🚀 **High Performance**
-- **Native multithreading**: Shared memory parallelization using Julia's threading model
-- **Memory-efficient streaming**: Process datasets larger than available RAM
-- **Template grid caching**: Reuse computed grids across runs
-- **Optimized algorithms**: Fast non-negative least squares fitting with numerical stability
+**Performance:**
+- Native multithreading using Julia's threading model
+- Memory-efficient chunked processing for datasets larger than available RAM
+- Template grid caching to reuse computations across runs
+- Resume capability for interrupted jobs
 
-### 📊 **Scalable Architecture**
-- **Chunked processing**: Automatic memory management for large catalogs (1M+ objects)
-- **Resume capability**: Interrupted jobs can be resumed from checkpoints
-- **Memory targets**: User-configurable memory usage (0.1GB to 10GB+ per chunk)
-- **Progress tracking**: Real-time progress with ETA estimation
+**Usability:**
+- Simple command-line interface 
+- Human-readable TOML configuration files 
+- Flexible output formats (FITS or HDF5)
+- Real-time progress tracking with memory estimates
 
-### 🔧 **User-Friendly**
-- **Simple CLI**: Intuitive command-line interface with comprehensive help
-- **TOML configuration**: Human-readable parameter files with clear documentation
-- **Flexible I/O**: FITS and HDF5 output formats with automatic conversion
-- **Rich feedback**: Detailed logging, memory estimates, and performance metrics
+**Scientific Features:**
+- Built-in intergalactic medium modeling (Inoue+2014)
+- Configurable template systematic uncertainties
+- Full redshift probability distributions with confidence intervals
+- Complete template reconstruction with coefficients
 
-### 🧬 **Scientific Accuracy**
-- **IGM attenuation**: Built-in intergalactic medium modeling (Inoue+2014)
-- **Template errors**: Configurable systematic uncertainties
-- **P(z) distributions**: Full redshift probability distributions with confidence intervals
-- **Best-fit SEDs**: Complete template reconstruction with coefficients
-
-### 🏗️ **Extensible Design**
-- **Template support**: Easy addition of custom SED template sets
-- **Filter management**: Comprehensive filter database with telescope/instrument organization
-- **Modular architecture**: Clean separation of fitting, I/O, and processing components
+**Customization:**
+- Easy addition of custom template sets
+- Comprehensive filter database organized by telescope/instrument
 
 ## Installation
 
@@ -108,7 +99,7 @@ Generate an example parameter file:
 lazy params > my_params.toml
 ```
 
-### 2. Configure your data
+### 2. Configure your parameter file
 
 Edit `my_params.toml` to point to your catalog:
 ```toml
@@ -124,7 +115,7 @@ Edit `my_params.toml` to point to your catalog:
     z_step = 0.01
 
 [translate]
-    # Map filter names to catalog columns
+    # Map Lazy.jl filter names (or nicknames!) to catalog columns
     f606w = {flux = 'f_f606w', error = 'e_f606w'}
     f814w = {flux = 'f_f814w', error = 'e_f814w'}
     # ... add your bands
@@ -134,13 +125,6 @@ Edit `my_params.toml` to point to your catalog:
 
 ```bash
 lazy fit -p my_params.toml
-```
-
-For large datasets, enable memory-efficient processing:
-```toml
-[runtime]
-    chunked_processing = true
-    target_memory_gb = 1.0
 ```
 
 ## CLI Reference
@@ -170,14 +154,8 @@ lazy fit -p params.toml -t auto   # Use all available threads
 ### Advanced Usage
 
 ```bash
-# Check memory requirements before running
-lazy fit -p params.toml --dry-run
-
-# Verbose output for debugging
-lazy fit -p params.toml --verbose
-
-# Resume interrupted job (automatic if work file exists)
-lazy fit -p params.toml  # Will prompt to resume if applicable
+# Resume interrupted job (automatic detection)
+lazy fit -p params.toml  # Will prompt to resume if work file exists
 ```
 
 ## Configuration
@@ -262,7 +240,7 @@ Filters are organized by telescope/instrument:
 
 ### Memory-Efficient Processing
 
-For large catalogs (>100k objects), enable chunked processing:
+For large catalogs (>100k objects) or large redshift grids, enable chunked processing to keep memory usage manageable. Processing happens in chunks while maintaining multithreading within each chunk. 
 
 ```toml
 [runtime]
@@ -270,15 +248,9 @@ For large catalogs (>100k objects), enable chunked processing:
     target_memory_gb = 1.0                       # Adjust based on your system
 ```
 
-**Memory targets guide:**
-- `0.25 GB`: Conservative (many small chunks)
-- `0.5 GB`: Balanced (recommended default)
-- `1.0 GB`: Moderate (good performance)
-- `2.0+ GB`: Aggressive (requires sufficient RAM)
-
 ### Resume Capability
 
-Interrupted jobs can be resumed automatically:
+Interrupted jobs can be resumed automatically from HDF5 work files. 
 
 ```bash
 # If job was interrupted, next run will prompt:
@@ -297,39 +269,9 @@ lazy cache-clear                                # Clear cache if needed
 ```
 
 Cache benefits:
-- **First run**: Builds and caches template grid (~30s for typical setup)
+- **First run**: Builds and caches template grid (~1m for typical setup)
 - **Subsequent runs**: Loads from cache (~2s)
 - **Automatic invalidation**: Cache updates when templates/parameters change
-
-### Performance Monitoring
-
-Lazy.jl provides detailed performance feedback:
-
-```
-📊 Objects: 1.0M
-📊 Bands: 10  
-📊 Filters: f606w, f814w, f090w, f115w, f150w, f200w, f277w, f356w, f410m, f444w
-
-====================================
-Memory Usage Estimate:
-  Template grid:      0.0 GB
-  Chi2 grid:          7.5 GB
-  Template errors:    0.0 GB
-  Coefficients:       0.15 GB
-  Photometric data:   0.15 GB
-  Working arrays:     0.0 GB
-  ----------------------------------------
-  Estimated peak:     7.8 GB
-  ⚠️  CAUTION: Moderate memory usage.
-     Monitor system memory during fitting.
-====================================
-
-⚙️ Runtime: Chunked processing enabled
-   Target memory: 1.0 GB per chunk
-⚙️ Using chunks of 134.2k objects (~1.0 GB per chunk)
-
-🧠 Fitting objects... ████████████████████ 100% (1.0M/1.0M; 8.4k obj/s, ETA: 0s)
-```
 
 ## Output Formats
 
@@ -348,12 +290,35 @@ Multi-extension FITS file with:
 - `coeffs`: Template coefficients
 
 **PZ Extension** (if `output_pz = true`):
-- `ID`: Object identifiers (-1 for redshift grid)
-- `Pz`: Redshift probability distributions
+- `ID`: Object identifiers (-1 for the first row, which stores the redshift grid)
+- `Pz`: Redshift probability distributions (redshift grid in first row)
 
 **TEMPL Extension** (if `output_templates = true`):
 - `z`: Redshift grid (-1 for wavelength grid)
-- Template names: Best-fit SED templates
+- Template names: Fluxes in each template at each redshift (common wavelength grid in first row)
+
+The `TEMPL` extension allows you to reconstruct the best-fit SED from the `coeffs` for a given object. For example, in python: 
+
+```python
+from astropy.io import fits
+import numpy as np
+
+ID = 1
+lazy_file = '...'
+
+lazy_summary = fits.getdata(lazy_file, ext=1)
+i = np.where(lazy_summary['ID']==ID)[0][0]
+z_best = lazy_summary['z_best'][i]
+coeffs = lazy_summary['coeffs'][i]
+
+lazy_templ = fits.getdata(lazy_file, ext=3)
+izbest = np.argmin(np.abs(z_best-lazy_templ['z']))
+template_names = [n for n in lazy_templ.dtype.names if n!='z']
+templates = np.array([lazy_templ[template][izbest] for template in template_names])
+
+wavelength = lazy_templ[template_names[0]][0] * (1+z_best) # Wavelength in first row
+fnu = np.dot(templates.T, coeffs) 
+```
 
 ### HDF5 Output
 
@@ -366,12 +331,6 @@ results.h5
 ├── photometry/         # Best-fit model photometry
 └── pz/                 # P(z) distributions (compressed)
 ```
-
-HDF5 benefits:
-- **Compression**: P(z) data compressed ~3-5x
-- **Metadata**: Complete parameter provenance
-- **Inspection**: Can be examined with standard HDF5 tools
-- **Streaming**: Enables processing of arbitrarily large datasets
 
 ## Performance & Scaling
 
@@ -404,7 +363,7 @@ Scaling with thread count (1M objects, 10 bands, 20 templates):
 
 ### Optimization Tips
 
-1. **Choose appropriate z_step**: Fine grids (0.01) vs coarse grids (0.1) have 100x memory difference
+1. **Choose appropriate z_step**: Fine grids (0.001) vs coarse grids (0.01) have 100x memory difference
 2. **Use chunked processing**: For datasets >1GB estimated memory usage
 3. **Template caching**: Significant speedup for repeated runs with same templates
 4. **Thread tuning**: Optimal thread count is usually 0.5-1x CPU cores
@@ -420,12 +379,18 @@ Scaling with thread count (1M objects, 10 bands, 20 templates):
     input_catalog = 'cosmos_catalog.fits'
     output_file = 'cosmos_photoz.fits'
     output_pz = true
+    output_templates = true
 
 [fitting]
     template_set = 'sfhz'
+    template_error = 'template_error'
+    template_error_scale = 0.2
+    igm_model = 'inoue14'
+    nphot_min = 2 
     z_min = 0.0
     z_max = 6.0
-    z_step = 0.05                               # Coarse grid for speed
+    z_step = 0.03                               # Coarse grid for speed
+    sys_err = 0.05
 
 [translate]
     f606w = {flux = 'f_auto_f606w', error = 'e_auto_f606w'}
@@ -436,169 +401,6 @@ Scaling with thread count (1M objects, 10 bands, 20 templates):
 
 ```bash
 lazy fit -p basic_fitting.toml
-```
-
-### High-Precision Fitting for Publication
-
-```toml
-# precision_fitting.toml  
-[io]
-    input_catalog = 'final_catalog.fits'
-    output_file = 'publication_photoz.fits'
-    output_pz = true
-    output_templates = true
-
-[fitting]
-    template_set = 'sfhz_Larson22'              # Extended template set
-    template_error_scale = 0.15                 # Conservative template errors
-    z_min = 0.0
-    z_max = 15.0  
-    z_step = 0.01                               # Fine redshift grid
-    nphot_min = 3                               # Strict detection requirement
-    sys_err = 0.03                              # Low systematic error
-
-[runtime]
-    chunked_processing = true                   # Required for fine grid
-    target_memory_gb = 2.0                      # Use available memory
-    preserve_work_file = true                   # Keep for analysis
-
-[translate]
-    # Full HST+JWST coverage
-    f435w = {flux = 'f_auto_f435w', error = 'e_auto_f435w'}
-    f606w = {flux = 'f_auto_f606w', error = 'e_auto_f606w'}
-    f775w = {flux = 'f_auto_f775w', error = 'e_auto_f775w'}
-    f814w = {flux = 'f_auto_f814w', error = 'e_auto_f814w'}
-    f850lp = {flux = 'f_auto_f850lp', error = 'e_auto_f850lp'}
-    f090w = {flux = 'f_auto_f090w', error = 'e_auto_f090w'}
-    f115w = {flux = 'f_auto_f115w', error = 'e_auto_f115w'}
-    f150w = {flux = 'f_auto_f150w', error = 'e_auto_f150w'}
-    f200w = {flux = 'f_auto_f200w', error = 'e_auto_f200w'}
-    f277w = {flux = 'f_auto_f277w', error = 'e_auto_f277w'}
-    f356w = {flux = 'f_auto_f356w', error = 'e_auto_f356w'}
-    f444w = {flux = 'f_auto_f444w', error = 'e_auto_f444w'}
-```
-
-### Large Survey Processing
-
-```toml
-# survey_processing.toml
-[io]
-    input_catalog = 'survey_10million.fits'
-    output_file = 'survey_photoz.h5'            # Use HDF5 for large datasets
-    output_pz = false                           # Skip P(z) to save space/time
-
-[fitting]
-    template_set = 'sfhz'
-    z_min = 0.0
-    z_max = 8.0
-    z_step = 0.02                               # Balanced resolution
-    nphot_min = 2                               # Inclusive for large surveys
-
-[runtime]
-    chunked_processing = true
-    target_memory_gb = 4.0                      # Use available memory
-    preserve_work_file = false                  # Auto-cleanup
-```
-
-## Technical Details
-
-### SED Fitting Algorithm
-
-Lazy.jl implements χ² minimization with non-negative least squares:
-
-1. **Template Grid Construction**: 
-   - Load SED templates and apply IGM attenuation (Inoue+2014)
-   - Integrate through filter transmission curves
-   - Cache results for reuse
-
-2. **Object Fitting**:
-   - For each object and redshift, solve: `min ||A·c - b||²` where `c ≥ 0`
-   - `A`: template fluxes, `b`: observed fluxes, `c`: coefficients
-   - Use numerically stable NNLS algorithm
-
-3. **Statistical Analysis**:
-   - Convert χ² to P(z): `P(z) ∝ exp(-χ²/2)`
-   - Compute confidence intervals from cumulative P(z)
-   - Calculate best-fit model photometry
-
-### Numerical Stability
-
-- **Template normalization**: Templates normalized to rest-frame 1μm
-- **Error handling**: Robust handling of non-finite values and edge cases
-- **Precision**: Float32 for P(z) storage, Float64 for computations
-- **Validation**: Comprehensive input validation and error reporting
-
-### Memory Architecture
-
-- **Shared template grid**: Read-only access across all threads
-- **Per-thread working arrays**: Avoid memory allocation in hot loops
-- **Chunked P(z)**: Process and write P(z) in manageable chunks
-- **Streaming I/O**: HDF5 backend for memory-efficient operations
-
-## Troubleshooting
-
-### Common Issues
-
-**Memory Errors**
-```
-ERROR: OutOfMemoryError()
-```
-**Solution**: Enable chunked processing or reduce `target_memory_gb`
-
-**Template Not Found**
-```
-LazyError: Template set 'custom' not found in template directory
-```
-**Solution**: Check template names with `lazy list-templates` or verify file paths
-
-**Column Missing**
-```
-LazyError: Column 'f_f606w' not found in catalog
-```
-**Solution**: Verify column names in your FITS catalog and update `[translate]` section
-
-**No Valid Photometry**
-```
-Warning: No valid bands found for object 12345
-```
-**Solution**: Check `missing_data_format` and `nphot_min` settings
-
-### Performance Issues
-
-**Slow Startup**
-- First run requires package precompilation (1-2 minutes)
-- Subsequent runs are fast
-- Use `julia --project=. -e "using Lazy"` to precompile manually
-
-**High Memory Usage**
-- Check memory estimate before running
-- Use `target_memory_gb` to control chunk size
-- Consider coarser redshift grid for initial exploration
-
-**Poor Threading Performance**
-- Optimal thread count is usually 0.5-1x CPU cores
-- BLAS threads are automatically set to 1 (avoid oversubscription)
-- Very small datasets may not benefit from many threads
-
-### Debugging
-
-**Enable verbose output**:
-```bash
-export JULIA_DEBUG=Lazy
-lazy fit -p params.toml
-```
-
-**Check work files**:
-```bash
-# Examine partial results
-h5dump results.work.h5
-```
-
-**Memory monitoring**:
-```bash
-# Linux/macOS
-htop
-# Monitor memory usage during fitting
 ```
 
 ### Getting Help
@@ -623,10 +425,12 @@ Contributions are welcome! Please see our contribution guidelines:
 
 ```
 src/
-├── Lazy.jl              # Main module and CLI entry point
-├── main.jl              # Core fitting algorithms and CLI parsing
-├── hdf5_streaming.jl    # Streaming processing and HDF5 I/O
-├── cache_utils.jl       # Template grid caching system
+├── Lazy.jl              # Main module definition and version checking
+├── cli.jl               # Command-line interface and user interaction
+├── fitting.jl           # Core photometric redshift fitting algorithms
+├── io.jl                # I/O operations, caching, and data management
+├── utils.jl             # Utilities (progress bars, memory estimation, formatting)
+├── template_grid.jl     # Template grid construction and IGM modeling
 ├── writedata.py         # Python interface for FITS I/O
 ├── templates/           # SED template library
 ├── filter_files/        # Filter transmission curves
@@ -663,8 +467,8 @@ The modular architecture makes it easy to extend Lazy.jl:
 
 - **New IGM models**: Add to `src/igm_data/`
 - **Template error functions**: Add to `src/templates/template_error/`
-- **Output formats**: Extend I/O functions in `hdf5_streaming.jl`
-- **Fitting algorithms**: Modify core algorithms in `main.jl`
+- **Output formats**: Extend I/O functions in `io.jl`
+- **Fitting algorithms**: Modify core algorithms in `fitting.jl`
 
 ### Testing
 

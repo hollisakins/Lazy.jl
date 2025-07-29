@@ -9,15 +9,39 @@ BLAS.set_num_threads(1)
 
 using TOML, HTTP
 function check_version()
-    # some logic to ensure the code is up-to-date
-    url = "https://raw.githubusercontent.com/hollisakins/Lazy.jl/main/Project.toml"
-    r = HTTP.get(url)
-    if r.status == 200
-        latest_version = TOML.parse(String(r.body))["version"]
-        if version != latest_version
-            println("Warning: Lazy.jl is out of date. Please update to version $latest_version (e.g. `git pull` and `bash install.sh`).")
-            return 1
+    # Check if we need to do a version check based on last check time
+    lazy_dir = joinpath(homedir(), ".lazy")
+    version_file = joinpath(lazy_dir, "version")
+    
+    # Only check version if cache file doesn't exist or is older than 1 day
+    if isfile(version_file)
+        cache_time = mtime(version_file)
+        if time() - cache_time < 24 * 3600  # 1 day in seconds
+            return 0  # Skip check, too recent
         end
+    end
+    
+    # Perform the actual version check
+    url = "https://raw.githubusercontent.com/hollisakins/Lazy.jl/main/Project.toml"
+    try
+        r = HTTP.get(url)
+        if r.status == 200
+            latest_version = TOML.parse(String(r.body))["version"]
+            if version != latest_version
+                @warn "Lazy.jl is out of date. Please update to version $latest_version (e.g. `git pull` and `bash install.sh`)."
+                # Update version file even if out of date
+                mkpath(lazy_dir)
+                touch(version_file)
+                return 1
+            else
+                # Update version file to record successful check
+                mkpath(lazy_dir)
+                touch(version_file)
+            end
+        end
+    catch e
+        # Silently ignore network errors, don't update cache
+        # Could optionally log debug info: @debug "Version check failed: $e"
     end
     return 0
 end
@@ -35,31 +59,13 @@ function write_data(filename, data, extname)
     return writedata.write_data(filename, data, extname)
 end
 
-include("cache_utils.jl")
 include("template_grid.jl")
-include("hdf5_streaming.jl")
-include("main.jl")
-
-# CLI entry point with proper exception handling
-function julia_main()::Cint
-    try
-        return main(copy(ARGS))
-    catch e
-        if isa(e, LazyError)
-            printstyled(stderr, "ERROR: "; color = :red, bold = true)
-            println(stderr, e.msg)
-            return 1
-        else
-            printstyled(stderr, "UNEXPECTED ERROR: "; color = :red, bold = true)
-            println(stderr, sprint(showerror, e))
-            Base.show_backtrace(stderr, catch_backtrace())
-            return 1
-        end
-    end
-end
+include("utils.jl")
+include("io.jl")
+include("fitting.jl")
+include("cli.jl")
 
 # Precompile the entry points
 @assert precompile(main, (Vector{String},))
-@assert precompile(julia_main, ())
 
 end

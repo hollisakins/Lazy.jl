@@ -1,13 +1,295 @@
 """
-HDF5 Streaming functionality for Lazy.jl
+Input/Output operations for Lazy.jl
 
-Provides streaming write capabilities, resume functionality, and HDF5-FITS conversion.
+Contains data loading, template/filter management, HDF5 operations, caching, and FITS I/O.
+Merges functionality from main.jl, hdf5_streaming.jl, and cache_utils.jl.
 """
 
+using TOML
+using FITSIO
 using HDF5
 using OrderedCollections
-using FITSIO
-using TOML
+using DelimitedFiles
+using Interpolations
+using Trapz
+
+# Global paths (from main.jl)
+const igmpath = @__DIR__() * "/igm_data/"
+const templatepath = @__DIR__() * "/templates/"
+const filterpath = @__DIR__() * "/filter_files/"
+
+# =============================================================================
+# Data Loading Functions (from main.jl)
+# =============================================================================
+
+function load_templates()
+    """
+    Load the templates from the template directory.
+    """
+    if !isdir(templatepath)
+        throw(LazyError("Template directory $templatepath not found"))
+    end
+    return TOML.parsefile(templatepath * "template_directory.toml")
+end
+
+function load_filters()
+    """
+    Load the filters from the filter directory.
+    """
+    if !isdir(filterpath)
+        throw(LazyError("Filter directory $filterpath not found"))
+    end
+    return TOML.parsefile(filterpath * "filter_directory.toml")
+end
+
+function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Float64}, Matrix{Float64}, Vector{String}}
+    """
+    Load the photometric data from the catalog.
+    
+    Returns (fnu, efnu, bands) where fnu and efnu are nobj×nband matrices.
+    """
+    IDs = read(cat[2], "ID")
+    nobj = length(IDs)
+
+    # Downselect to bands that are present in the catalog
+    all_cols = FITSIO.colnames(cat[2])
+    bands = filter(b -> (translate[b]["flux"] in all_cols) && (translate[b]["error"] in all_cols), bands)
+    nband = length(bands)
+
+    if nband == 0
+        throw(LazyError("No valid bands found in the catalog. Check the translate section in the parameter file."))
+    end
+
+    fnu = zeros(nobj, nband)
+    efnu = zeros(nobj, nband)
+    for (i, band) in enumerate(bands)
+        flux_col = translate[band]["flux"]
+        err_col = translate[band]["error"]
+        fnu_i = read(cat[2], flux_col)
+        efnu_i = read(cat[2], err_col)
+        fnu[:, i] = fnu_i
+        efnu[:, i] = efnu_i
+    end
+    return fnu, efnu, bands
+end
+
+function set_sys_err(fnu::Matrix{Float64}, efnu::Matrix{Float64}, sys_err::Float64)::Tuple{Matrix{Float64}, Matrix{Float64}}
+    """
+    Set the systematic error on the fluxes.
+    
+    Returns (fnu, efnu) with systematic errors added in quadrature.
+    """
+    if sys_err == 0.0
+        return fnu, efnu
+    end
+    nbands = size(fnu, 2)
+    for i in 1:nbands
+        fnu_i = fnu[:, i]
+        efnu_i = efnu[:, i]
+        efnu_i = sqrt.( efnu_i .^ 2 + (sys_err .* max.(fnu_i, 0.0)) .^ 2 )
+        efnu[:, i] = efnu_i
+    end
+    return fnu, efnu
+end
+
+function get_filter(nickname::String)::Tuple{Vector{Float64}, Vector{Float64}}
+    """
+    Get the filter transmission curve from the nickname.
+    
+    Returns (wavelength, transmission) vectors.
+    """
+
+    filter_directory = load_filters()
+    filter_nicknames = Dict{String, String}()
+    filter_names = sort(collect(keys(filter_directory)))
+
+    for key in filter_names
+        for n in filter_directory[key]["nicknames"]
+            filter_nicknames[n] = key
+        end
+    end
+
+    if haskey(filter_nicknames, nickname)
+        real_name = filter_nicknames[nickname]
+        filt = readdlm(filterpath * real_name)
+        return filt[:,1], filt[:,2]
+    else
+        throw(LazyError("Filter '$nickname' not found"))
+    end
+end
+
+function get_pivot_wavelengths(bands::Vector{String})::Vector{Float64}
+    """
+    Compute the pivot wavelengths for the given bands.
+    
+    Returns vector of pivot wavelengths in Angstroms.
+    """
+    nband = length(bands)
+    pivot_wavs = zeros(nband)
+    for k in 1:nband
+        band = bands[k]
+        fwav, ftrans = get_filter(band)
+        pivot_wavs[k] = sqrt(trapz(fwav, ftrans) / trapz(fwav, ftrans ./ (fwav .^ 2)))
+    end
+    return pivot_wavs
+end
+
+function load_template(file::String)::Tuple{Vector{Float64}, Union{Vector{Float64}, Matrix{Float64}}, Union{Nothing, Vector{Float64}}}
+    """
+    Load a template from a file.
+    
+    Returns (wavelength, flux, redshift_grid) where redshift_grid is Nothing for non-redshift-dependent templates.
+    """
+
+    isfits = endswith(file, ".fits")
+
+    # If the template is a FITS file, read the "wave" and "flux" columns 
+    # and check for redshift-dependence 
+    if isfits
+        t = FITS(file)
+        templwav = read(t[2], "wave")
+        templflam = read(t[2], "flux")
+
+        # Check for redshift-dependence
+        if ndims(templflam) == 2
+            zdependent = true
+        else
+            zdependent = false
+        end
+
+        # If the template is redshift-dependent
+        if zdependent
+            # get the redshift values from the header
+            hdr = read_header(t[2])
+            templnz = hdr["NZ"]
+            templz = zeros(templnz)
+            for tmp in 1:templnz
+                tmp0 = tmp-1
+                templz[tmp] = hdr["Z$tmp0"]
+            end
+            
+            # transpose the flux arrray 
+            templflam = transpose(templflam)
+        else
+            templz = nothing
+        end
+        templfnu = templflam .* templwav .^ 2
+
+    else
+        # If the template is an ASCII file, read the first two columns 
+        t = readdlm(file)
+        templwav = t[:,1]
+        templflam = t[:,2]
+        templfnu =  templflam .* templwav .^ 2
+        templz = nothing
+    end
+    
+    return templwav, templfnu, templz
+end
+
+function spectres(new_wavs, old_wavs, old_fluxes; old_errs=nothing, fill_value=0.0)
+    """
+    Interpolate a spectrum to a new wavelength grid.
+    """
+    # interp = linear_interpolation(wav_old, flux_old, extrapolation_bc=Flat())
+    # flux_new = interp(wav_new)
+    # return flux_new
+
+    # Make arrays of edge positions and widths for the old and new bins
+
+    old_edges, old_widths = make_bins(old_wavs)
+    new_edges, new_widths = make_bins(new_wavs)
+
+    # Generate output arrays to be populated
+    new_fluxes = zeros(length(new_wavs))
+
+    if !isnothing(old_errs)
+        if length(old_errs) != length(old_fluxes)
+            throw(LazyError("old_fluxes and old_errs must be the same length"))
+        else
+            new_errs = copy(new_fluxes)
+        end
+    end
+
+    start = 1
+    stop = 1
+
+    # Calculate new flux and uncertainty values, looping over new bins
+    for j in 1:length(new_wavs)
+
+        # Add filler values if new_wavs extends outside of spec_wavs
+        if (new_edges[j] < old_edges[1]) || (new_edges[j+1] > old_edges[end])
+            new_fluxes[j] = fill_value
+
+            if !isnothing(old_errs)
+                new_errs[j] = fill_value
+            end
+
+            if (j == 0) || (j == length(new_wavs))
+                # warnings.warn(
+                #     "Spectres: new_wavs contains values outside the range "
+                #     "in spec_wavs, new_fluxes and new_errs will be filled "
+                #     "with the value set in the 'fill' keyword argument "
+                #     "(by default 0).",
+                #     category=RuntimeWarning,
+                # )
+                continue
+            end
+        end
+
+        # Find first old bin which is partially covered by the new bin
+        while old_edges[start+1] <= new_edges[j]
+            start += 1
+        end
+
+        # Find last old bin which is partially covered by the new bin
+        while old_edges[stop+1] < new_edges[j+1]
+            stop += 1
+        end
+
+        # If new bin is fully inside an old bin start and stop are equal
+        if stop == start
+            new_fluxes[j] = old_fluxes[start]
+            if !isnothing(old_errs)
+                new_errs[j] = old_errs[start]
+            end
+            
+            # Otherwise multiply the first and last old bin widths by P_ij
+        else
+            start_factor = ((old_edges[start+1] - new_edges[j]) / (old_edges[start+1] - old_edges[start]))
+            
+            end_factor = ((new_edges[j+1] - old_edges[stop]) / (old_edges[stop+1] - old_edges[stop]))
+            
+            old_widths[start] *= start_factor
+            old_widths[stop] *= end_factor
+            
+            # Populate new_fluxes spectrum and uncertainty arrays
+            f_widths = old_widths[start:stop+1] .* old_fluxes[start:stop+1]
+            new_fluxes[j] = sum(f_widths)/sum(old_widths[start:stop+1])
+            
+            if !isnothing(old_errs)
+                e_wid = old_widths[start:stop+1]*old_errs[start:stop+1]
+                
+                new_errs[j] = sqrt(sum(e_wid .^2)) / sum(old_widths[start:stop+1])
+                
+                # Put back the old bin widths to their initial values
+                old_widths[start] /= start_factor
+                old_widths[stop] /= end_factor
+            end
+        end
+    end
+                
+    # If errors were supplied return both new_fluxes and new_errs.
+    if !isnothing(old_errs)
+        return new_fluxes, new_errs
+    else
+        return new_fluxes
+    end
+end
+
+# =============================================================================
+# HDF5 Operations (from hdf5_streaming.jl)
+# =============================================================================
 
 """
     store_param_metadata(parent_group::HDF5.Group, param::Dict)
@@ -387,13 +669,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
     end
 end
 
-"""
-    get_optimal_chunk_size(nobj::Int, nz::Int)
-
-Calculate optimal chunk size based on default memory target (0.5 GB).
-Maintained for backwards compatibility.
-"""
 function get_optimal_chunk_size(nobj::Int, nz::Int)
+    """
+    Calculate optimal chunk size based on default memory target (0.5 GB).
+    Maintained for backwards compatibility.
+    """
     return get_chunk_size_for_memory_target(nobj, nz, 0.5)
 end
 
@@ -486,303 +766,227 @@ function prompt_resume(work_file::String, last_obj::Int, nobj::Int)::Tuple{Strin
     end
 end
 
-"""
-    fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
-                  zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
-                  nobj::Int, nz::Int, nband::Int, ntempl::Int, 
-                  fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
-                  nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
-                  target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool)
+# =============================================================================
+# Template Caching Functions (from cache_utils.jl)
+# =============================================================================
 
-Main streaming fit function that handles both chunked and in-memory processing modes.
-When chunked_processing=false, uses single chunk (in-memory mode).
-When chunked_processing=true, uses memory-controlled chunking.
+const CACHE_DIR = joinpath(homedir(), ".lazy", "cache")
+const MAX_CACHE_SIZE_GB = 10.0  # Maximum cache size in GB
+
 """
-function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
-                      zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
-                      nobj::Int, nz::Int, nband::Int, ntempl::Int, 
-                      fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
-                      nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
-                      target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool)
-    
-    # Generate work file name
-    work_file = output_file * ".work.h5"
-    
-    # Check for resume capability
-    can_resume, last_obj = check_resume_file(work_file)
-    start_obj = 1
-    
-    if can_resume
-        action, should_resume = prompt_resume(work_file, last_obj, nobj)
-        
-        if action == "resume" && should_resume
-            start_obj = last_obj + 1
-            println("✅ Resuming from object $start_obj")
-        elseif action == "complete"
-            println("✅ Marking run as complete and generating output...")
-            finalize_hdf5_work_file(work_file)
-            
-            # Jump to output conversion
-            final_output = output_file
-            if endswith(output_file, ".fits")
-                println("💾 Converting HDF5 to FITS format: $output_file")
-                convert_hdf5_to_fits(work_file, output_file)
-                
-                # Handle work file based on preserve_work_file setting
-                if preserve_work_file
-                    println("💾 Work file preserved: $work_file")
-                else
-                    print("🗑️  Remove work file $work_file? [Y/n]: ")
-                    response = readline()
-                    if response == "" || lowercase(response) == "y"
-                        rm(work_file)
-                        println("✅ Work file removed")
-                    else
-                        println("💾 Work file preserved: $work_file")
-                    end
-                end
-            else
-                # Keep HDF5 format
-                if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
-                    mv(work_file, final_output, force=true)
-                    println("✅ Results saved to: $final_output")
-                else
-                    println("✅ Results saved to: $work_file")
-                end
-            end
-            return 0  # Exit early for complete runs
-        elseif action == "keep"
-            println("💾 Keeping work file and exiting...")
-            return 0  # Exit without processing
-        else  # action == "overwrite"
-            println("🔄 Starting fresh run")
-            rm(work_file, force=true)
-            can_resume = false
-        end
+Ensure the cache directory exists
+"""
+function ensure_cache_dir()
+    if !isdir(CACHE_DIR)
+        mkpath(CACHE_DIR)
+        println("📁 Created cache directory: $CACHE_DIR")
     end
+end
+
+"""
+Generate a unique cache key based on template grid parameters
+"""
+function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64}, 
+                           bands::Vector{String}, igm_model::String,
+                           template_error::String, template_error_scale::Float64)::String
     
-    # Create work file if not resuming
-    if !can_resume
-        println("📝 Creating HDF5 work file: $work_file")
-        create_hdf5_work_file(work_file, param, nobj, nz, nband, ntempl, bands, zgrid, templates)
-    end
+    # Create a hash of all relevant parameters
+    template_names = sort([basename(t) for t in templates])
+    sorted_bands = sort(bands)
     
-    # Determine chunk size based on processing mode
-    if chunked_processing
-        # Use memory-controlled chunking
-        chunk_size = get_chunk_size_for_memory_target(nobj, nz, target_memory_gb)
-        actual_memory_gb = chunk_size * nz * 4 / (1024^3)  # Float32 chi2 values
-        println("⚙️ Chunked processing: $(format_number(chunk_size)) objects per chunk (~$(round(actual_memory_gb, digits=2)) GB per chunk)")
-    else
-        # In-memory mode: single chunk = entire catalog
-        chunk_size = nobj
-        estimated_gb = nobj * nz * 4 / (1024^3)  # Rough estimate for display
-        println("⚙️ In-memory processing: all $(format_number(nobj)) objects in single batch (~$(round(estimated_gb, digits=2)) GB)")
-        if estimated_gb > 8.0
-            println("   ⚠️  High memory usage detected. Consider setting chunked_processing = true if you encounter memory issues")
-        end
-    end
+    # Create a string representation of all parameters
+    params_str = join([
+        join(template_names, ","),
+        "z$(minimum(zgrid))_$(maximum(zgrid))_$(length(zgrid))",
+        join(sorted_bands, ","),
+        igm_model,
+        template_error,
+        string(template_error_scale)
+    ], "_")
     
-    # Initialize progress tracking
-    total_remaining = nobj - start_obj + 1
-    progress_bar = ProgressBar(total_remaining, "Fitting objects...", 
-                              show_rate=true, show_eta=true, prefix_emoji="🧠")
-    
-    # Display initial progress at 0%
-    display_progress(progress_bar)
-    
-    # Process objects in chunks
-    objects_processed = 0
-    
-    # Set up interrupt handling
-    interrupted = Ref(false)
-    
+    # Generate hash and take first 8 characters for readability
+    hash_val = hash(params_str)
+    return string(hash_val, base=16)[1:8]
+end
+
+"""
+Get the full path for a cache file
+"""
+function get_cache_filename(cache_key::String)::String
+    return joinpath(CACHE_DIR, "templgrid_$(cache_key).h5")
+end
+
+"""
+Check if a cache file exists for the given key
+"""
+function cache_exists(cache_key::String)::Bool
+    filename = get_cache_filename(cache_key)
+    return isfile(filename)
+end
+
+"""
+Save template grid and error grid to cache
+"""
+function save_template_cache(templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+                            metadata::Dict, cache_key::String)
     try
-        for chunk_start in start_obj:chunk_size:nobj
-            chunk_end = min(chunk_start + chunk_size - 1, nobj)
-            chunk_nobj = chunk_end - chunk_start + 1
+        ensure_cache_dir()
+        filename = get_cache_filename(cache_key)
+        
+        h5open(filename, "w") do file
+            # Store the template grid
+            file["templgrid"] = templgrid
+            file["template_error_grid"] = template_error_grid
             
-            # Process this chunk
-            chunk_IDs = IDs[chunk_start:chunk_end]
-            chunk_fnu = fnu[chunk_start:chunk_end, :]
-            chunk_efnu = efnu[chunk_start:chunk_end, :]
-            
-            # Initialize chunk result arrays
-            chunk_zbest = zeros(chunk_nobj)
-            chunk_chi2best = zeros(chunk_nobj)
-            chunk_coeffsbest = zeros(chunk_nobj, ntempl)
-            chunk_chi2grid = output_pz ? zeros(Float32, chunk_nobj, nz) : nothing
-            
-            # Fit objects in this chunk using threading
-            nthreads_to_use = min(Threads.nthreads(), chunk_nobj)
-            objects_per_task = max(1, chunk_nobj ÷ nthreads_to_use)
-            ntasks = cld(chunk_nobj, objects_per_task)
-            
-            tasks = Vector{Task}(undef, ntasks)
-            for task_id in 1:ntasks
-                task_start = (task_id - 1) * objects_per_task + 1
-                task_end = min(task_id * objects_per_task, chunk_nobj)
-                
-                tasks[task_id] = Threads.@spawn begin
-                    batch_results = Vector{Tuple{Int, Float64, Float64, Vector{Float64}, Vector{Float32}}}()
-                    
-                    for j_local in task_start:task_end
-                        # Check for interruption before starting work
-                        if interrupted[]
-                            push!(batch_results, (j_local, -1.0, -1.0, zeros(ntempl), fill(Float32(-1.0), nz)))
-                            increment!(progress_bar)
-                            continue
-                        end
-                        
-                        j_global = chunk_start + j_local - 1
-                        
-                        zbest_j, chi2best_j, coeffsbest_j, chi2_row_j = fit_single_object(
-                            j_global, chunk_fnu[j_local,:], chunk_efnu[j_local,:], 
-                            templgrid, template_error_grid, zgrid, nphot_min, 
-                            nband, ntempl, nz; interrupted_flag=interrupted
-                        )
-                        
-                        push!(batch_results, (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j))
-                        increment!(progress_bar)
+            # Store metadata
+            meta_group = create_group(file, "metadata")
+            for (key, value) in metadata
+                try
+                    if isa(value, Vector{String})
+                        meta_group[key] = value
+                    elseif isa(value, Vector)
+                        meta_group[key] = collect(value)  # Convert to regular array
+                    else
+                        meta_group[key] = value
                     end
-                    
-                    return batch_results
+                catch e
+                    # For complex types, store as string
+                    meta_group[key] = string(value)
                 end
             end
             
-            # Collect results from tasks
-            for task in tasks
-                batch_results = fetch(task)
-                for (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j) in batch_results
-                    chunk_zbest[j_local] = zbest_j
-                    chunk_chi2best[j_local] = chi2best_j
-                    chunk_coeffsbest[j_local, :] = coeffsbest_j
-                    if output_pz
-                        chunk_chi2grid[j_local, :] = chi2_row_j
-                    end
-                end
-            end
-            
-            # Calculate P(z) statistics for this chunk
-            if output_pz
-                pz_chunk = exp.(-0.5 * chunk_chi2grid)
-                cpz_chunk = cumsum(pz_chunk, dims=2) ./ sum(pz_chunk, dims=2)
-                
-                chunk_z_l95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.025)))]
-                chunk_z_l68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.160)))]
-                chunk_z_med = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.500)))]
-                chunk_z_u68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.840)))]
-                chunk_z_u95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.975)))]
-            else
-                # Use best-fit redshift as placeholder
-                chunk_z_l95 = chunk_zbest
-                chunk_z_l68 = chunk_zbest
-                chunk_z_med = chunk_zbest
-                chunk_z_u68 = chunk_zbest
-                chunk_z_u95 = chunk_zbest
-                chunk_chi2grid = nothing
-            end
-            
-            # Calculate best-fit photometry for this chunk
-            chunk_photobest = zeros(chunk_nobj, nband)
-            for j_local in 1:chunk_nobj
-                if chunk_zbest[j_local] > 0  # Only for valid fits
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest[j_local]))
-                    for k in 1:nband
-                        chunk_photobest[j_local, k] = 0.0
-                        for t in 1:ntempl
-                            chunk_photobest[j_local, k] += templgrid[t, z_idx, k] * chunk_coeffsbest[j_local, t]
-                        end
-                    end
-                end
-            end
-            
-            # Write chunk results to HDF5
-            write_chunk_results(work_file, chunk_start, chunk_end,
-                              chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
-                              chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
-                              chunk_photobest, bands, chunk_chi2grid)
-            
-            # Progress is now updated per-object within the threaded tasks
-            objects_processed += chunk_nobj
+            # Store cache creation info
+            meta_group["cache_created"] = time()
+            meta_group["cache_key"] = cache_key
         end
         
-        # Finish progress bar immediately after fitting loop completes
-        if interrupted[]
-            finish!(progress_bar, final_message="interrupted")
-        else
-            finish!(progress_bar)
+        # Clean up old cache files if needed
+        cleanup_cache()
+        
+    catch e
+        @warn "Failed to save template cache: $e"
+        # Don't let cache failures stop the main computation
+    end
+end
+
+"""
+Load template grid from cache if it exists
+"""
+function load_template_cache(cache_key::String)::Union{Tuple{Array{Float64,3}, Matrix{Float64}}, Nothing}
+    try
+        filename = get_cache_filename(cache_key)
+        
+        if !isfile(filename)
+            return nothing
         end
         
-        # Generate template output if requested (after fitting is complete)
-        if output_templ
-            println("📊 Generating template output...")
-            
-            # Use unified template grid builder for spectral mode
-            templgrid_spectral, _, wavelength_grid = build_template_grid(
-                templates, zgrid, param["fitting"]["igm_model"], param["fitting"];
-                output_type=:spectral
-            )
-            
-            # Write template data to HDF5 work file
-            write_template_data(work_file, templgrid_spectral, wavelength_grid, zgrid, templates)
-            println("✅ Template output generated")
-        end
-        
-        # Mark work file as complete
-        finalize_hdf5_work_file(work_file)
-        
-        # Handle output format and work file preservation
-        final_output = output_file
-        if endswith(output_file, ".fits")
-            println("💾 Exporting to FITS: $output_file")
-            convert_hdf5_to_fits(work_file, output_file)
-            
-            # Handle work file based on preserve_work_file setting
-            if preserve_work_file
-                println("💾 Work file preserved: $work_file")
-            else
-                print("🗑️  Remove work file $work_file? [Y/n]: ")
-                response = readline()
-                if response == "" || lowercase(response) == "y"
-                    rm(work_file)
-                    println("✅ Work file removed")
-                else
-                    println("💾 Work file preserved: $work_file")
-                end
-            end
-        else
-            # Keep HDF5 format
-            if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
-                mv(work_file, final_output, force=true)
-                println("✅ Results saved to: $final_output")
-            else
-                # Output file doesn't have recognized extension, ask user
-                println("⚠️  Output file '$output_file' doesn't have .fits/.h5/.hdf5 extension")
-                print("   Save as HDF5 format? [Y/n]: ")
-                response = readline()
-                if response == "" || lowercase(response) == "y"
-                    hdf5_output = output_file * ".h5"
-                    mv(work_file, hdf5_output, force=true)
-                    println("✅ Results saved to: $hdf5_output")
-                else
-                    println("💾 Work file preserved: $work_file")
-                end
-            end
+        h5open(filename, "r") do file
+            templgrid = read(file, "templgrid")
+            template_error_grid = read(file, "template_error_grid")
+            return (templgrid, template_error_grid)
         end
         
     catch e
-        if isa(e, InterruptException)
-            interrupted[] = true
-            println("\n⚠️ Fitting interrupted by user. Processing results for completed objects...")
-            finalize_hdf5_work_file(work_file)  # Mark as complete for resume
-            finish!(progress_bar, final_message="interrupted")
-        else
-            println("\n⚠️ Error during streaming fit: $e")
-            println("💾 Partial results preserved in: $work_file")
-            rethrow(e)
+        @warn "Failed to load template cache $cache_key: $e"
+        return nothing
+    end
+end
+
+"""
+Get information about cache usage
+"""
+function get_cache_info()::Dict
+    if !isdir(CACHE_DIR)
+        return Dict("exists" => false)
+    end
+    
+    cache_files = filter(f -> endswith(f, ".h5"), readdir(CACHE_DIR))
+    total_size = 0
+    file_info = []
+    
+    for file in cache_files
+        filepath = joinpath(CACHE_DIR, file)
+        size_bytes = stat(filepath).size
+        size_gb = size_bytes / (1024^3)
+        total_size += size_bytes
+        
+        push!(file_info, Dict(
+            "file" => file,
+            "size_gb" => size_gb,
+            "modified" => stat(filepath).mtime
+        ))
+    end
+    
+    # Sort by modification time (newest first)
+    sort!(file_info, by=f -> f["modified"], rev=true)
+    
+    return Dict(
+        "exists" => true,
+        "total_size_gb" => total_size / (1024^3),
+        "num_files" => length(cache_files),
+        "files" => file_info
+    )
+end
+
+"""
+Clean up old cache files if total size exceeds limit
+"""
+function cleanup_cache()
+    info = get_cache_info()
+    
+    if !info["exists"] || info["total_size_gb"] <= MAX_CACHE_SIZE_GB
+        return
+    end
+    
+    files = info["files"]
+    total_size = info["total_size_gb"]
+    
+    # Remove oldest files until we're under the limit
+    files_to_remove = []
+    for file_info in reverse(files)  # Start with oldest
+        if total_size <= MAX_CACHE_SIZE_GB
+            break
+        end
+        
+        push!(files_to_remove, file_info["file"])
+        total_size -= file_info["size_gb"]
+    end
+    
+    # Remove the files
+    for file in files_to_remove
+        filepath = joinpath(CACHE_DIR, file)
+        try
+            rm(filepath)
+            println("🗑️  Removed old cache file: $file")
+        catch e
+            @warn "Failed to remove cache file $file: $e"
+        end
+    end
+end
+
+"""
+Clear all cached template grids
+"""
+function clear_cache()
+    info = get_cache_info()
+    
+    if !info["exists"]
+        return (0, 0.0)
+    end
+    
+    removed_count = 0
+    freed_gb = 0.0
+    
+    for file_info in info["files"]
+        filepath = joinpath(CACHE_DIR, file_info["file"])
+        try
+            rm(filepath)
+            removed_count += 1
+            freed_gb += file_info["size_gb"]
+        catch e
+            @warn "Failed to remove cache file $(file_info["file"]): $e"
         end
     end
     
-    return 0
+    return (removed_count, freed_gb)
 end

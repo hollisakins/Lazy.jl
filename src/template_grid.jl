@@ -151,7 +151,7 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             if z > maxz
                 # Thread-safe test-and-set: only first thread to encounter high-z will print
                 if atomic_cas!(pr, true, false)
-                    println("⚠️ Redshift $z is greater than the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
+                    println("⚠️ Redshift grid extends beyond the maximum redshift in the IGM model. Using IGM transmission at z=$maxz")
                 end
                 iz_up = length(igm_redshifts)
             else
