@@ -491,14 +491,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 if preserve_work_file
                     println("💾 Work file preserved: $work_file")
                 else
-                    print("🗑️  Remove work file $work_file? [Y/n]: ")
-                    response = readline()
-                    if response == "" || lowercase(response) == "y"
-                        rm(work_file)
-                        println("✅ Work file removed")
-                    else
-                        println("💾 Work file preserved: $work_file")
-                    end
+                    rm(work_file)
+                    println("🗑️ Work file automatically removed: $work_file")
                 end
             else
                 # Keep HDF5 format
@@ -701,14 +695,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             if preserve_work_file
                 println("💾 Work file preserved: $work_file")
             else
-                print("🗑️  Remove work file $work_file? [Y/n]: ")
-                response = readline()
-                if response == "" || lowercase(response) == "y"
-                    rm(work_file)
-                    println("✅ Work file removed")
-                else
-                    println("💾 Work file preserved: $work_file")
-                end
+                rm(work_file)
+                println("🗑️ Work file automatically removed: $work_file")
             end
         else
             # Keep HDF5 format
@@ -716,17 +704,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 mv(work_file, final_output, force=true)
                 println("✅ Results saved to: $final_output")
             else
-                # Output file doesn't have recognized extension, ask user
-                println("⚠️  Output file '$output_file' doesn't have .fits/.h5/.hdf5 extension")
-                print("   Save as HDF5 format? [Y/n]: ")
-                response = readline()
-                if response == "" || lowercase(response) == "y"
-                    hdf5_output = output_file * ".h5"
-                    mv(work_file, hdf5_output, force=true)
-                    println("✅ Results saved to: $hdf5_output")
-                else
-                    println("💾 Work file preserved: $work_file")
-                end
+                # Output file doesn't have recognized extension, default to HDF5
+                hdf5_output = output_file * ".h5"
+                mv(work_file, hdf5_output, force=true)
+                println("⚠️  Output file '$output_file' has unrecognized extension, saved as HDF5: $hdf5_output")
             end
         end
         
