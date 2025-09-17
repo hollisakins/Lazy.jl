@@ -301,6 +301,11 @@ description = 'HST ACS F850LP downloaded from SVO filter profile service'
 nicknames = ['f850l','f850lp','F850L','F850LP','HST_F850L','HST_F850LP','hst_f850l','hst_f850lp','HST-F850L','HST-F850LP','hst-f850l','hst-f850lp', 'HST_ACS_F850L', 'hst_acs_f850l', 'HST-ACS-F850L', 'hst-acs-f850l','HST_ACS_F850LP', 'hst_acs_f850lp', 'HST-ACS-F850LP', 'hst-acs-f850lp']
 wav_units = 'angstrom'
 
+['hst/wfc3/f098m']
+description = 'HST WFC3 F098M downloaded from SVO filter profile service'
+nicknames = ['f098m','F098M','HST_F098M','hst_f098m','HST-F098M','hst-f098m', 'HST_WFC3_F098M', 'hst_wfc3_f098m', 'HST-WFC3-F098M', 'hst-wfc3-f098m']
+wav_units = 'angstrom'
+
 ['hst/wfc3/f105w']
 description = 'HST WFC3 F105W downloaded from SVO filter profile service'
 nicknames = ['f105w','F105W','HST_F105W','hst_f105w','HST-F105W','hst-f105w', 'HST_WFC3_F105W', 'hst_wfc3_f105w', 'HST-WFC3-F105W', 'hst-wfc3-f105w']
