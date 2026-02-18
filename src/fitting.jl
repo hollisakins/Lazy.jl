@@ -12,10 +12,11 @@ using LinearAlgebra
 using Base.Threads
 using Trapz
 
-function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64}, 
-                          templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64}, 
+function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64},
+                          templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
-                          interrupted_flag::Union{Nothing,Ref{Bool}}=nothing)
+                          interrupted_flag::Union{Nothing,Ref{Bool}}=nothing,
+                          z_fix_idx::Int=-1)
     
     # Wrap entire function in try-catch to handle individual object failures gracefully
     try
@@ -23,14 +24,22 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         templgrid_ij = Matrix{Float64}(undef, nband, ntempl)
         fnu_mod_j = Vector{Float64}(undef, nband)
         chi2_row = Vector{Float32}(undef, nz)
-        
+
+        # Handle fixed redshift (z_spec mode)
+        if z_fix_idx > 0
+            fill!(chi2_row, Float32(1e18))
+            z_range = z_fix_idx:z_fix_idx
+        else
+            z_range = 1:nz
+        end
+
         # Track best fit for this object
         best_chi2 = Inf
         best_z_idx = 0
         best_coeffs = zeros(ntempl)
-        
-        # Loop over all redshifts for this object
-        for i in 1:nz
+
+        # Loop over redshifts for this object
+        for i in z_range
             # Check for interruption if flag provided
             if interrupted_flag !== nothing && interrupted_flag[]
                 # Fill remaining chi2 values with -1 and break
@@ -257,6 +266,8 @@ function fit(param)
     end
     
     translate = param["translate"]
+    # Extract z_spec column mapping before building bands list
+    zspec_column = haskey(translate, "zspec") ? pop!(translate, "zspec") : nothing
     bands = sort(collect(keys(param["translate"])))
     # Load in the data
     fnu, efnu, bands = with_spinner(() -> load_data(cat, bands, translate), "Loading photometric data", "📊")
@@ -374,14 +385,48 @@ function fit(param)
     
     # Check for template cache before building grid
     use_cache = get(fitting, "template_cache", true)  # Default enabled
+
+    # CGM Lyman-alpha damping wing model (Asada+24)
+    add_cgm = get(fitting, "add_cgm", true)
+    cgm_A = Float64(get(fitting, "cgm_A", 3.5918))
+    cgm_a = Float64(get(fitting, "cgm_a", 1.8414))
+    cgm_c = Float64(get(fitting, "cgm_c", 18.001))
+    if add_cgm
+        println("🌌 CGM damping wing: enabled (Asada+24)")
+    else
+        println("🌌 CGM damping wing: disabled")
+    end
+
+    # Spectroscopic redshift fixing
+    use_zspec = get(fitting, "use_zspec", false)
+    zspec = fill(NaN, nobj)
+    if use_zspec
+        if zspec_column !== nothing
+            all_cols = FITSIO.colnames(cat[2])
+            if zspec_column in all_cols
+                zspec = Float64.(read(cat[2], zspec_column))
+                zspec[.!isfinite.(zspec) .| (zspec .< 0)] .= NaN
+                nzspec = sum(isfinite.(zspec))
+                println("🔭 Spectroscopic redshift fixing: enabled ($nzspec / $nobj objects with z_spec)")
+            else
+                @warn "use_zspec=true but column '$zspec_column' not found in catalog. Fitting all objects with full grid."
+                use_zspec = false
+            end
+        else
+            @warn "use_zspec=true but no 'zspec' entry in [translate] section. Fitting all objects with full grid."
+            use_zspec = false
+        end
+    end
+
     templgrid = nothing
     template_error_grid = nothing
     cache_key = ""
     
     if use_cache
         # Generate cache key from all relevant parameters
-        cache_key = generate_cache_key(templates, zgrid, bands, fitting["igm_model"], 
-                                     fitting["template_error"], fitting["template_error_scale"])
+        cache_key = generate_cache_key(templates, zgrid, bands, fitting["igm_model"],
+                                     fitting["template_error"], fitting["template_error_scale"];
+                                     add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c)
         
         # Try to load from cache
         cached_data = load_template_cache(cache_key)
@@ -400,7 +445,8 @@ function fit(param)
         # Use unified template grid builder for photometry mode
         templgrid, template_error_grid_new, _ = build_template_grid(
             templates, zgrid, fitting["igm_model"], fitting;
-            output_type=:photometry, bands=bands
+            output_type=:photometry, bands=bands,
+            add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c
         )
         
         # Use newly built template error grid if not loaded from cache
@@ -426,7 +472,11 @@ function fit(param)
                 "template_error_scale" => fitting["template_error_scale"],
                 "ntempl" => ntempl,
                 "nz" => nz,
-                "nband" => nband
+                "nband" => nband,
+                "add_cgm" => add_cgm,
+                "cgm_A" => cgm_A,
+                "cgm_a" => cgm_a,
+                "cgm_c" => cgm_c
             )
             
             save_template_cache(templgrid, template_error_grid, metadata, cache_key)
@@ -439,19 +489,21 @@ function fit(param)
     # Template grids are now ready (either from cache or newly built)
     
     # Always use fit_streaming() - it handles both chunked and in-memory modes
-    return fit_streaming(param, templgrid, template_error_grid, zgrid, bands, 
+    return fit_streaming(param, templgrid, template_error_grid, zgrid, bands,
                        templates, nobj, nz, nband, ntempl, fnu, efnu, IDs,
                        nphot_min, output_file, output_pz, output_templ,
-                       target_memory_gb, preserve_work_file, chunked_processing)
+                       target_memory_gb, preserve_work_file, chunked_processing,
+                       use_zspec, zspec)
 end
 
 """
     fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                   zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
-                  nobj::Int, nz::Int, nband::Int, ntempl::Int, 
+                  nobj::Int, nz::Int, nband::Int, ntempl::Int,
                   fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
                   nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
-                  target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool)
+                  target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool,
+                  use_zspec::Bool, zspec::Vector{Float64})
 
 Main streaming fit function that handles both chunked and in-memory processing modes.
 When chunked_processing=false, uses single chunk (in-memory mode).
@@ -459,11 +511,19 @@ When chunked_processing=true, uses memory-controlled chunking.
 """
 function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                       zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
-                      nobj::Int, nz::Int, nband::Int, ntempl::Int, 
+                      nobj::Int, nz::Int, nband::Int, ntempl::Int,
                       fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
                       nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
-                      target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool)
+                      target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool,
+                      use_zspec::Bool, zspec::Vector{Float64})
     
+    # CGM params (read from fitting section)
+    fitting = param["fitting"]
+    add_cgm = get(fitting, "add_cgm", true)
+    cgm_A = Float64(get(fitting, "cgm_A", 3.5918))
+    cgm_a = Float64(get(fitting, "cgm_a", 1.8414))
+    cgm_c = Float64(get(fitting, "cgm_c", 18.001))
+
     # Generate work file name
     work_file = output_file * ".work.h5"
     
@@ -518,6 +578,15 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
     if !can_resume
         println("📝 Creating HDF5 work file: $work_file")
         create_hdf5_work_file(work_file, param, nobj, nz, nband, ntempl, bands, zgrid, templates)
+    end
+
+    # Write z_spec data to work file if available
+    if use_zspec
+        h5open(work_file, "r+") do file
+            if haskey(file["results"], "z_spec")
+                file["results/z_spec"][:] = zspec
+            end
+        end
     end
     
     # Determine chunk size based on processing mode
@@ -588,11 +657,18 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                         end
                         
                         j_global = chunk_start + j_local - 1
-                        
+
+                        # Compute fixed redshift index if z_spec available
+                        z_fix_idx_j = -1
+                        if use_zspec && isfinite(zspec[j_global])
+                            z_fix_idx_j = argmin(abs.(zgrid .- zspec[j_global]))
+                        end
+
                         zbest_j, chi2best_j, coeffsbest_j, chi2_row_j = fit_single_object(
-                            j_global, chunk_fnu[j_local,:], chunk_efnu[j_local,:], 
-                            templgrid, template_error_grid, zgrid, nphot_min, 
-                            nband, ntempl, nz; interrupted_flag=interrupted
+                            j_global, chunk_fnu[j_local,:], chunk_efnu[j_local,:],
+                            templgrid, template_error_grid, zgrid, nphot_min,
+                            nband, ntempl, nz;
+                            interrupted_flag=interrupted, z_fix_idx=z_fix_idx_j
                         )
                         
                         push!(batch_results, (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j))
@@ -674,7 +750,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             # Use unified template grid builder for spectral mode
             templgrid_spectral, _, wavelength_grid = build_template_grid(
                 templates, zgrid, param["fitting"]["igm_model"], param["fitting"];
-                output_type=:spectral
+                output_type=:spectral,
+                add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c
             )
             
             # Write template data to HDF5 work file

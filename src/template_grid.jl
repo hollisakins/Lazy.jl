@@ -56,7 +56,43 @@ function load_igm_model(igm_model_name::String)
 end
 
 """
-    build_template_grid(templates::Vector{String}, zgrid::Vector{Float64}, 
+    sigma_a(nu_rest)
+Ly-alpha absorption cross-section (Lorentzian damping wing). Returns cm².
+"""
+function sigma_a(nu_rest::Float64)::Float64
+    Lam_a = 6.255486e8
+    nu_lya = 2.46607e15
+    C = 6.9029528e22
+    nu_ratio = nu_rest / nu_lya
+    sig = C * nu_ratio^4 / (4.0 * π^2 * (nu_rest - nu_lya)^2 + Lam_a^2 * nu_ratio^6 / 4.0)
+    return sig * 1e-16
+end
+
+"""
+    cgm_sigmoid(z, A, a, c)
+HI column density vs redshift sigmoid (Asada+24). Returns log10(N_HI).
+"""
+function cgm_sigmoid(z::Float64, A::Float64, a::Float64, c::Float64)::Float64
+    return A / (1.0 + exp(-a * (z - 6.0))) + c
+end
+
+"""
+    apply_cgm_damping_wing!(transmission, templwav, z, cgm_A, cgm_a, cgm_c)
+In-place multiply transmission by exp(-τ_CGM). No-op for z < 6.
+"""
+function apply_cgm_damping_wing!(transmission::Vector{Float64}, templwav::Vector{Float64},
+                                  z::Float64, cgm_A::Float64, cgm_a::Float64, cgm_c::Float64)
+    z < 6.0 && return
+    N_HI = 10.0^cgm_sigmoid(z, cgm_A, cgm_a, cgm_c)
+    c_ang = 2.99792458e18
+    @inbounds for i in eachindex(transmission)
+        nu_rest = c_ang / templwav[i]
+        transmission[i] *= exp(-N_HI * sigma_a(nu_rest))
+    end
+end
+
+"""
+    build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
                        igm_model_name::String, fitting_params::Dict; 
                        output_type::Symbol=:photometry, bands::Union{Nothing,Vector{String}}=nothing, 
                        wavelength_grid::Union{Nothing,Vector{Float64}}=nothing)
@@ -78,10 +114,12 @@ For :spectral mode: (templgrid[ntempl,nz,nwav], nothing, wavelength_grid)
 
 The template grid shape is consistent (ntempl, nz, dimension3) for both modes.
 """
-function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64}, 
-                           igm_model_name::String, fitting_params::Dict; 
-                           output_type::Symbol=:photometry, bands::Union{Nothing,Vector{String}}=nothing, 
-                           wavelength_grid::Union{Nothing,Vector{Float64}}=nothing)
+function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
+                           igm_model_name::String, fitting_params::Dict;
+                           output_type::Symbol=:photometry, bands::Union{Nothing,Vector{String}}=nothing,
+                           wavelength_grid::Union{Nothing,Vector{Float64}}=nothing,
+                           add_cgm::Bool=true, cgm_A::Float64=3.5918,
+                           cgm_a::Float64=1.8414, cgm_c::Float64=18.001)
     
     # Validate inputs
     if output_type == :photometry && bands === nothing
@@ -182,7 +220,11 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             end
             
             transmission_interp = [y1; y2]
-            
+
+            if add_cgm
+                apply_cgm_damping_wing!(transmission_interp, working_wavelength_grid, z, cgm_A, cgm_a, cgm_c)
+            end
+
             # Ensure transmission_interp matches working_wavelength_grid length
             if length(transmission_interp) != length(working_wavelength_grid)
                 # This shouldn't happen, but handle gracefully

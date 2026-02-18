@@ -58,7 +58,24 @@
     # Caches template grids to speed up subsequent runs with same parameters
     template_cache = true
 
-[runtime] 
+    # CGM Lyman-alpha damping wing model (Asada+24)
+    # Adds damping wing absorption redward of Ly-alpha at z >= 6.
+    # Applied multiplicatively on top of IGM attenuation.
+    add_cgm = true
+
+    # Sigmoid parameters for HI column density evolution:
+    # log10(N_HI) = A / (1 + exp(-a * (z - 6))) + c
+    # Defaults from Asada+24, usually do not need to be changed.
+    # cgm_A = 3.5918
+    # cgm_a = 1.8414
+    # cgm_c = 18.001
+
+    # Fix fit at spectroscopic redshift if available in input catalog
+    # Objects with valid z_spec are fit only at that redshift (nearest grid point)
+    # Objects without z_spec (NaN, negative, or missing) are fit normally
+    use_zspec = false
+
+[runtime]
     # Memory-efficient chunked processing for large datasets
     # Enables processing of datasets larger than available memory with resume capability
     chunked_processing = false             # Enable chunked processing (default: false)
@@ -71,6 +88,9 @@
     # entries in the "filter_directory.toml" file. Use `lazy list-filters` to 
     # see the available filters. The entires should correspond to column names
     # in the input catalog
+
+    # Spectroscopic redshift column (used when fitting.use_zspec = true)
+    # zspec = 'z_spec'
 
     f606w = {flux = 'f_f606w', error = 'e_f606w'}
     f814w = {flux = 'f_f814w', error = 'e_f814w'}

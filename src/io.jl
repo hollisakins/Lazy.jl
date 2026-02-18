@@ -383,7 +383,12 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
         create_dataset(g_results, "z_u68", Float64, (nobj,))
         create_dataset(g_results, "z_u95", Float64, (nobj,))
         create_dataset(g_results, "coeffs", Float64, (nobj, ntempl))
-        
+
+        # Optional z_spec column
+        if get(param["fitting"], "use_zspec", false)
+            create_dataset(g_results, "z_spec", Float64, (nobj,))
+        end
+
         # Create photometry group for best-fit model
         g_phot = create_group(file, "photometry")
         for (i, band) in enumerate(bands)
@@ -597,6 +602,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
         data["ID"] = Dict("format" => "K", "data" => IDs)
         data["z_best"] = Dict("format" => "E", "data" => zbest)
         data["chi2"] = Dict("format" => "E", "data" => chi2best)
+        # Include z_spec if available
+        if haskey(h5f["results"], "z_spec")
+            z_spec_data = read(h5f["results/z_spec"])
+            data["z_spec"] = Dict("format" => "E", "data" => z_spec_data)
+        end
         data["z_l95"] = Dict("format" => "E", "data" => z_l95)
         data["z_l68"] = Dict("format" => "E", "data" => z_l68)
         data["z_med"] = Dict("format" => "E", "data" => z_med)
@@ -786,14 +796,16 @@ end
 """
 Generate a unique cache key based on template grid parameters
 """
-function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64}, 
+function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64},
                            bands::Vector{String}, igm_model::String,
-                           template_error::String, template_error_scale::Float64)::String
-    
+                           template_error::String, template_error_scale::Float64;
+                           add_cgm::Bool=true, cgm_A::Float64=3.5918,
+                           cgm_a::Float64=1.8414, cgm_c::Float64=18.001)::String
+
     # Create a hash of all relevant parameters
     template_names = sort([basename(t) for t in templates])
     sorted_bands = sort(bands)
-    
+
     # Create a string representation of all parameters
     params_str = join([
         join(template_names, ","),
@@ -801,7 +813,9 @@ function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64},
         join(sorted_bands, ","),
         igm_model,
         template_error,
-        string(template_error_scale)
+        string(template_error_scale),
+        string(add_cgm),
+        string(cgm_A), string(cgm_a), string(cgm_c)
     ], "_")
     
     # Generate hash and take first 8 characters for readability
