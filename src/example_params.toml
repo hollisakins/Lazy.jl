@@ -20,10 +20,18 @@
     # If true, outputs to output_file in extension "PZ" 
     output_pz = true 
     
-    # Whether to output the template set used, including IGM attenuation 
+    # Whether to output the template set used, including IGM attenuation
     # This is needed in order to reconstruct the best-fit SEDs later
-    # If true, outputs to output_file in extension "TEMPL" 
-    output_templates = true 
+    # If true, outputs to output_file in extension "TEMPL"
+    output_templates = true
+
+    # Rest-frame absolute magnitudes (M_UV, M_U, M_V, M_J)
+    # Computes absolute AB magnitudes using flat LCDM cosmology.
+    # Requires flux_units to be set.
+    # output_restframe_mags = true
+    # flux_units = 'uJy'        # Required. Options: uJy, nJy, Jy, cgs
+    # H0 = 70.0                 # Hubble constant in km/s/Mpc (default: 70.0)
+    # Om = 0.3                  # Matter density parameter (default: 0.3)
 
 [fitting]
     # Template set to use for fitting. This should correspond to an entry in the

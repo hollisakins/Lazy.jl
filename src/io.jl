@@ -415,6 +415,14 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
                           chunk=(chunk_size, nz), compress=3)
         end
         
+        # Rest-frame absolute magnitudes
+        output_restframe_mags = get(param["io"], "output_restframe_mags", false)
+        if output_restframe_mags
+            for mag_name in ["M_UV", "M_U", "M_V", "M_J"]
+                create_dataset(g_results, mag_name, Float64, (nobj,))
+            end
+        end
+
         # Optional templates group (datasets created when template data is written)
         output_templ = get(param["io"], "output_templates", false)
         if output_templ
@@ -463,7 +471,8 @@ end
                        z_med::Vector{Float64}, z_u68::Vector{Float64},
                        z_u95::Vector{Float64}, photobest::Matrix{Float64},
                        bands::Vector{String}, chi2grid=nothing,
-                       zgrid=nothing; pz_gt=nothing, Sz=nothing, z_integers=nothing)
+                       zgrid=nothing; pz_gt=nothing, Sz=nothing, z_integers=nothing,
+                       restframe_mags=nothing)
 
 Write a chunk of results to the HDF5 work file.
 """
@@ -477,7 +486,8 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            zgrid::Union{Nothing,Vector{Float64}}=nothing;
                            pz_gt::Union{Nothing,Matrix{Float32}}=nothing,
                            Sz::Union{Nothing,Vector{Float64}}=nothing,
-                           z_integers::Union{Nothing,Vector{Int}}=nothing)
+                           z_integers::Union{Nothing,Vector{Int}}=nothing,
+                           restframe_mags::Union{Nothing,Matrix{Float64}}=nothing)
     
     try
         h5open(filename, "r+") do file
@@ -525,6 +535,15 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
             end
             if Sz !== nothing && haskey(file["results"], "Sz")
                 file["results/Sz"][chunk_start:chunk_end] = Sz
+            end
+
+            # Write rest-frame absolute magnitudes
+            if restframe_mags !== nothing
+                for (k, mag_name) in enumerate(["M_UV", "M_U", "M_V", "M_J"])
+                    if haskey(file["results"], mag_name)
+                        file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
+                    end
+                end
             end
 
             # Update metadata (handle existing vs new datasets)
@@ -668,6 +687,14 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
             data["Sz"] = Dict("format" => "E", "data" => read(h5f["results/Sz"]))
         end
 
+        # Rest-frame magnitudes
+        has_restframe_mags_py = haskey(h5f["results"], "M_UV")
+        if has_restframe_mags_py
+            for mag_name in ["M_UV", "M_U", "M_V", "M_J"]
+                data[mag_name] = Dict("format" => "E", "unit" => "mag", "data" => read(h5f["results/$mag_name"]))
+            end
+        end
+
         # Add photometry
         for (i, band) in enumerate(bands)
             photobest_band = read(h5f["photometry/$band"])
@@ -785,6 +812,14 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 push!(summary_coldefs, ("Sz", "1E", ""))
             end
 
+            # Rest-frame magnitude columns
+            has_restframe_mags = haskey(h5f["results"], "M_UV")
+            if has_restframe_mags
+                for mag_name in ["M_UV", "M_U", "M_V", "M_J"]
+                    push!(summary_coldefs, (mag_name, "1E", "mag"))
+                end
+            end
+
             for band in bands
                 push!(summary_coldefs, (band, "1E", "fnu"))
             end
@@ -815,6 +850,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 end
                 if has_Sz
                     CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/Sz"][cs:ce])); colnum += 1
+                end
+                if has_restframe_mags
+                    for mag_name in ["M_UV", "M_U", "M_V", "M_J"]
+                        CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/$mag_name"][cs:ce])); colnum += 1
+                    end
                 end
                 for band in bands
                     CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["photometry/$band"][cs:ce])); colnum += 1

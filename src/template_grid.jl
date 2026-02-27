@@ -328,3 +328,66 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
         return (templgrid, nothing, wavelength_grid)
     end
 end
+
+"""
+    build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{Float64})
+
+Build rest-frame template grid integrated through 4 hardcoded rest-frame filters
+(M_UV, M_U, M_V, M_J). No IGM attenuation, no redshifting — just rest-frame F_nu
+through rest-frame bandpasses. Normalization matches build_template_grid() (at
+rest-frame 10000A).
+
+Returns: restframe_templgrid[ntempl, nz, 4] where dim 3 = [M_UV, M_U, M_V, M_J]
+"""
+function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{Float64})
+    ntempl = length(templates)
+    nz = length(zgrid)
+    nrf = 4
+
+    # Hardcoded rest-frame filter nicknames
+    rf_nicknames = ["rf_uv", "rf_u", "rf_v", "rf_j"]
+    rf_filters = [get_filter(nick) for nick in rf_nicknames]
+
+    restframe_templgrid = zeros(ntempl, nz, nrf)
+
+    for i in 1:ntempl
+        templwav_i, templfnu_i, templz_i = load_template(templates[i])
+
+        # Normalization index at rest-frame 10000A (same as build_template_grid line 263)
+        windex = argmin(abs.(templwav_i .- 1e4))
+
+        @threads for j in 1:nz
+            z = zgrid[j]
+
+            # Select flux for this redshift
+            if templz_i === nothing
+                templfnu_j = copy(templfnu_i)
+            else
+                zindex = argmin(abs.(templz_i .- z))
+                templfnu_j = templfnu_i[:, zindex]
+            end
+
+            # Normalize at rest-frame 10000A
+            norm_val = templfnu_j[windex]
+            if norm_val <= 0 || !isfinite(norm_val)
+                continue
+            end
+            templfnu_j = templfnu_j ./ norm_val
+
+            # Integrate through each rest-frame filter
+            for k in 1:nrf
+                fwav, ftrans = rf_filters[k]
+                nu = 1.0 ./ fwav
+                interp = linear_interpolation(templwav_i, templfnu_j, extrapolation_bc=Flat())
+                fnu_interp = interp(fwav)
+
+                denom = trapz(nu, ftrans ./ nu)
+                if denom > 0
+                    restframe_templgrid[i, j, k] = trapz(nu, fnu_interp .* ftrans ./ nu) / denom
+                end
+            end
+        end
+    end
+
+    return restframe_templgrid
+end

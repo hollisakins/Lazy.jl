@@ -12,6 +12,48 @@ using LinearAlgebra
 using Base.Threads
 using Trapz
 
+# Flux zero points for AB magnitude system: m_AB = -2.5*log10(F_cgs) - 48.6
+const FLUX_ZP = Dict(
+    "cgs" => -48.6, "Jy" => 8.9,
+    "uJy" => 23.9, "ujy" => 23.9,
+    "nJy" => 31.4, "njy" => 31.4,
+)
+
+const RF_MAG_NAMES = ["M_UV", "M_U", "M_V", "M_J"]
+
+"""
+    luminosity_distance_Mpc(z, H0, Om)
+
+Luminosity distance in Mpc for flat LCDM cosmology using Simpson's rule.
+"""
+function luminosity_distance_Mpc(z::Float64, H0::Float64, Om::Float64)::Float64
+    z <= 0.0 && return 0.0
+    c_km_s = 299792.458
+    OL = 1.0 - Om
+    n = 500
+    dz = z / n
+    integral = 0.0
+    for k in 0:n
+        zp = k * dz
+        Ezp = sqrt(Om * (1.0 + zp)^3 + OL)
+        w = (k == 0 || k == n) ? 1.0 : (k % 2 == 1 ? 4.0 : 2.0)
+        integral += w / Ezp
+    end
+    integral *= dz / 3.0
+    return (1.0 + z) * (c_km_s / H0) * integral
+end
+
+"""
+    distance_modulus(z, H0, Om)
+
+Distance modulus DM = 5*log10(d_L_Mpc) + 25.
+"""
+function distance_modulus(z::Float64, H0::Float64, Om::Float64)::Float64
+    d_L = luminosity_distance_Mpc(z, H0, Om)
+    d_L <= 0.0 && return 0.0
+    return 5.0 * log10(d_L) + 25.0
+end
+
 function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64},
                           templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
@@ -255,6 +297,26 @@ function fit(param)
             output_templ = io["output_templates"]
         else
             output_templ = false
+        end
+
+        # Rest-frame absolute magnitudes
+        output_restframe_mags = get(io, "output_restframe_mags", false)
+        flux_units = nothing
+        flux_zp = 0.0
+        cosmo_H0 = 70.0
+        cosmo_Om = 0.3
+        if output_restframe_mags
+            if !haskey(io, "flux_units")
+                throw(LazyError("parameter `io.flux_units` is required when output_restframe_mags = true"))
+            end
+            flux_units = io["flux_units"]
+            if !haskey(FLUX_ZP, flux_units)
+                throw(LazyError("Unrecognized flux_units '$flux_units'. Must be one of: cgs, Jy, uJy, nJy"))
+            end
+            flux_zp = FLUX_ZP[flux_units]
+            cosmo_H0 = Float64(get(io, "H0", 70.0))
+            cosmo_Om = Float64(get(io, "Om", 0.3))
+            println("📊 Rest-frame magnitudes: enabled (flux_units=$flux_units, H0=$cosmo_H0, Om=$cosmo_Om)")
         end
 
         # Parse output format: "fits", "hdf5", or "both"
@@ -541,15 +603,27 @@ function fit(param)
     end
 
     println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    
+
     # Template grids are now ready (either from cache or newly built)
-    
+
+    # Build rest-frame template grid if needed
+    restframe_templgrid = nothing
+    if output_restframe_mags
+        restframe_templgrid = with_spinner(
+            () -> build_restframe_template_grid(templates, zgrid),
+            "Building rest-frame template grid", "📊")
+        println("✅ Rest-frame template grid built: " * summary(restframe_templgrid))
+    end
+
     # Always use fit_streaming() - it handles both chunked and in-memory modes
     return fit_streaming(param, templgrid, template_error_grid, zgrid, bands,
                        templates, nobj, nz, nband, ntempl, fnu, efnu, IDs,
                        nphot_min, output_file, output_pz, output_templ,
                        target_memory_gb, preserve_work_file, chunked_processing,
-                       use_zspec, zspec, output_format)
+                       use_zspec, zspec, output_format;
+                       output_restframe_mags=output_restframe_mags,
+                       restframe_templgrid=restframe_templgrid,
+                       flux_zp=flux_zp, cosmo_H0=cosmo_H0, cosmo_Om=cosmo_Om)
 end
 
 """
@@ -572,7 +646,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                       fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
                       nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
                       target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool,
-                      use_zspec::Bool, zspec::Vector{Float64}, output_format::String="fits")
+                      use_zspec::Bool, zspec::Vector{Float64}, output_format::String="fits";
+                      output_restframe_mags::Bool=false,
+                      restframe_templgrid::Union{Nothing,Array{Float64,3}}=nothing,
+                      flux_zp::Float64=0.0, cosmo_H0::Float64=70.0, cosmo_Om::Float64=0.3)
     
     # CGM params (read from fitting section)
     fitting = param["fitting"]
@@ -792,12 +869,35 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 end
             end
             
+            # Compute rest-frame absolute magnitudes for this chunk
+            chunk_restframe_mags = nothing
+            if output_restframe_mags && restframe_templgrid !== nothing
+                nrf = 4
+                chunk_restframe_mags = fill(NaN, chunk_nobj, nrf)
+                for j_local in 1:chunk_nobj
+                    chunk_zbest[j_local] <= 0 && continue
+                    z_idx = argmin(abs.(zgrid .- chunk_zbest[j_local]))
+                    DM = distance_modulus(chunk_zbest[j_local], cosmo_H0, cosmo_Om)
+                    kcorr = 2.5 * log10(1.0 + chunk_zbest[j_local])
+                    for k in 1:nrf
+                        f_rest = 0.0
+                        for t in 1:ntempl
+                            f_rest += restframe_templgrid[t, z_idx, k] * chunk_coeffsbest[j_local, t]
+                        end
+                        if f_rest > 0.0
+                            chunk_restframe_mags[j_local, k] = -2.5 * log10(f_rest) + flux_zp - DM + kcorr
+                        end
+                    end
+                end
+            end
+
             # Write chunk results to HDF5
             write_chunk_results(work_file, chunk_start, chunk_end,
                               chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
                               chunk_photobest, bands, chunk_chi2grid, zgrid;
-                              pz_gt=chunk_pz_gt, Sz=chunk_Sz, z_integers=z_integers)
+                              pz_gt=chunk_pz_gt, Sz=chunk_Sz, z_integers=z_integers,
+                              restframe_mags=chunk_restframe_mags)
             
             # Progress is now updated per-object within the threaded tasks
             objects_processed += chunk_nobj

@@ -356,4 +356,24 @@ description = 'Spitzer/IRAC CH2 downloaded from SVO filter profile service'
 nicknames = ['irac_ch2','IRAC_ch2','ch2','CH2','IRAC_45','irac_45']
 wav_units = 'angstrom'
 
+['restframe/tophat_uv']
+description = 'Rest-frame 1450-1550A tophat for M_UV'
+nicknames = ['rf_uv']
+wav_units = 'angstrom'
+
+['restframe/bessell_u']
+description = 'Bessell U for rest-frame M_U'
+nicknames = ['rf_u']
+wav_units = 'angstrom'
+
+['restframe/bessell_v']
+description = 'Bessell V for rest-frame M_V'
+nicknames = ['rf_v']
+wav_units = 'angstrom'
+
+['restframe/twomass_j']
+description = '2MASS J for rest-frame M_J'
+nicknames = ['rf_j']
+wav_units = 'angstrom'
+
 
