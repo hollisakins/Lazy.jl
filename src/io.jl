@@ -395,7 +395,14 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             create_dataset(g_phot, band, Float64, (nobj,))
         end
         
-        # Optional P(z) group with compression
+        # Integrated P(z) quantities (always computed)
+        z_integers = collect(1:floor(Int, maximum(zgrid)))
+        for Z in z_integers
+            create_dataset(g_results, "pz_gt$(Z)", Float32, (nobj,))
+        end
+        create_dataset(g_results, "Sz", Float64, (nobj,))
+
+        # Optional full P(z) grid with compression
         output_pz = get(param["io"], "output_pz", false)
         if output_pz
             g_pz = create_group(file, "pz")
@@ -455,8 +462,8 @@ end
                        z_l95::Vector{Float64}, z_l68::Vector{Float64},
                        z_med::Vector{Float64}, z_u68::Vector{Float64},
                        z_u95::Vector{Float64}, photobest::Matrix{Float64},
-                       bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing,
-                       zgrid::Union{Nothing,Vector{Float64}}=nothing)
+                       bands::Vector{String}, chi2grid=nothing,
+                       zgrid=nothing; pz_gt=nothing, Sz=nothing, z_integers=nothing)
 
 Write a chunk of results to the HDF5 work file.
 """
@@ -467,7 +474,10 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            z_med::Vector{Float64}, z_u68::Vector{Float64},
                            z_u95::Vector{Float64}, photobest::Matrix{Float64},
                            bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing,
-                           zgrid::Union{Nothing,Vector{Float64}}=nothing)
+                           zgrid::Union{Nothing,Vector{Float64}}=nothing;
+                           pz_gt::Union{Nothing,Matrix{Float32}}=nothing,
+                           Sz::Union{Nothing,Vector{Float64}}=nothing,
+                           z_integers::Union{Nothing,Vector{Int}}=nothing)
     
     try
         h5open(filename, "r+") do file
@@ -504,7 +514,19 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                     file["pz/pz"][chunk_start:chunk_end, :] = pz_chunk
                 end
             end
-            
+
+            # Write integrated P(z) quantities
+            if pz_gt !== nothing && z_integers !== nothing
+                for (zi, Z) in enumerate(z_integers)
+                    if haskey(file["results"], "pz_gt$(Z)")
+                        file["results/pz_gt$(Z)"][chunk_start:chunk_end] = pz_gt[:, zi]
+                    end
+                end
+            end
+            if Sz !== nothing && haskey(file["results"], "Sz")
+                file["results/Sz"][chunk_start:chunk_end] = Sz
+            end
+
             # Update metadata (handle existing vs new datasets)
             meta_group = file["metadata"]
             
@@ -632,6 +654,20 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
         data["z_u68"] = Dict("format" => "E", "data" => z_u68)
         data["z_u95"] = Dict("format" => "E", "data" => z_u95)
 
+        # Integrated P(z) columns
+        zgrid_py = read(meta, "zgrid")
+        z_integers_py = collect(1:floor(Int, maximum(zgrid_py)))
+        has_pz_gt_py = !isempty(z_integers_py) && haskey(h5f["results"], "pz_gt$(z_integers_py[1])")
+        if has_pz_gt_py
+            for Z in z_integers_py
+                data["Pz_gt$(Z)"] = Dict("format" => "E", "data" => read(h5f["results/pz_gt$(Z)"]))
+            end
+        end
+        has_Sz_py = haskey(h5f["results"], "Sz")
+        if has_Sz_py
+            data["Sz"] = Dict("format" => "E", "data" => read(h5f["results/Sz"]))
+        end
+
         # Add photometry
         for (i, band) in enumerate(bands)
             photobest_band = read(h5f["photometry/$band"])
@@ -734,6 +770,21 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 ("z_u68", "1E", ""),
                 ("z_u95", "1E", ""),
             ])
+
+            # Integrated P(z) columns
+            zgrid_full = read(meta, "zgrid")
+            z_integers = collect(1:floor(Int, maximum(zgrid_full)))
+            has_pz_gt = !isempty(z_integers) && haskey(h5f["results"], "pz_gt$(z_integers[1])")
+            if has_pz_gt
+                for Z in z_integers
+                    push!(summary_coldefs, ("Pz_gt$(Z)", "1E", ""))
+                end
+            end
+            has_Sz = haskey(h5f["results"], "Sz")
+            if has_Sz
+                push!(summary_coldefs, ("Sz", "1E", ""))
+            end
+
             for band in bands
                 push!(summary_coldefs, (band, "1E", "fnu"))
             end
@@ -757,6 +808,14 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_med"][cs:ce])); colnum += 1
                 CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_u68"][cs:ce])); colnum += 1
                 CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_u95"][cs:ce])); colnum += 1
+                if has_pz_gt
+                    for Z in z_integers
+                        CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/pz_gt$(Z)"][cs:ce])); colnum += 1
+                    end
+                end
+                if has_Sz
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/Sz"][cs:ce])); colnum += 1
+                end
                 for band in bands
                     CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["photometry/$band"][cs:ce])); colnum += 1
                 end

@@ -670,7 +670,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_zbest = zeros(chunk_nobj)
             chunk_chi2best = zeros(chunk_nobj)
             chunk_coeffsbest = zeros(chunk_nobj, ntempl)
-            chunk_chi2grid = output_pz ? zeros(Float32, chunk_nobj, nz) : nothing
+            chunk_chi2grid = zeros(Float32, chunk_nobj, nz)
             
             # Fit objects in this chunk using threading
             nthreads_to_use = min(Threads.nthreads(), chunk_nobj)
@@ -723,29 +723,58 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     chunk_zbest[j_local] = zbest_j
                     chunk_chi2best[j_local] = chi2best_j
                     chunk_coeffsbest[j_local, :] = coeffsbest_j
-                    if output_pz
-                        chunk_chi2grid[j_local, :] = chi2_row_j
-                    end
+                    chunk_chi2grid[j_local, :] = chi2_row_j
                 end
             end
             
-            # Calculate P(z) statistics for this chunk
-            if output_pz
-                pz_chunk = exp.(-0.5 * chunk_chi2grid)
-                cpz_chunk = cumsum(pz_chunk, dims=2) ./ sum(pz_chunk, dims=2)
-                
-                chunk_z_l95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.025)))]
-                chunk_z_l68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.160)))]
-                chunk_z_med = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.500)))]
-                chunk_z_u68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.840)))]
-                chunk_z_u95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.975)))]
-            else
-                # Use best-fit redshift as placeholder
-                chunk_z_l95 = chunk_zbest
-                chunk_z_l68 = chunk_zbest
-                chunk_z_med = chunk_zbest
-                chunk_z_u68 = chunk_zbest
-                chunk_z_u95 = chunk_zbest
+            # Calculate P(z) statistics for this chunk (always computed)
+            pz_chunk = exp.(-0.5 * chunk_chi2grid)
+            cpz_chunk = cumsum(pz_chunk, dims=2) ./ sum(pz_chunk, dims=2)
+
+            chunk_z_l95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.025)))]
+            chunk_z_l68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.160)))]
+            chunk_z_med = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.500)))]
+            chunk_z_u68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.840)))]
+            chunk_z_u95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.975)))]
+
+            # Integrated P(z) quantities: P(z > Z) and Sz
+            z_integers = collect(1:floor(Int, maximum(zgrid)))
+            chunk_pz_gt = fill(Float32(-1), chunk_nobj, length(z_integers))
+            z_max_grid = maximum(zgrid)
+            Sz_bc = collect(0.0:1.0:z_max_grid)
+            chunk_Sz = fill(-1.0, chunk_nobj)
+
+            for j in 1:chunk_nobj
+                total = trapz(zgrid, @view pz_chunk[j, :])
+                total <= 0 && continue
+
+                # P(z > Z) for each integer Z
+                for (zi, Z) in enumerate(z_integers)
+                    idx = searchsortedfirst(zgrid, Z + eps())
+                    idx > length(zgrid) && continue
+                    chunk_pz_gt[j, zi] = Float32(trapz(@view(zgrid[idx:end]), @view(pz_chunk[j, idx:end])) / total)
+                end
+
+                # Sz: center of the unit-width bin with the most P(z)
+                best_prob = -1.0
+                best_bc = -1.0
+                for bc in Sz_bc
+                    zlo = bc == 0.0 ? 0.0 : bc - 0.5
+                    zhi = bc == z_max_grid ? z_max_grid : bc + 0.5
+                    ilo = searchsortedfirst(zgrid, zlo)
+                    ihi = searchsortedlast(zgrid, zhi - eps())
+                    ilo > ihi && continue
+                    prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_chunk[j, ilo:ihi])) / total
+                    if prob > best_prob
+                        best_prob = prob
+                        best_bc = bc
+                    end
+                end
+                chunk_Sz[j] = best_bc
+            end
+
+            # Only save full chi2 grid when output_pz is requested
+            if !output_pz
                 chunk_chi2grid = nothing
             end
             
@@ -767,7 +796,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             write_chunk_results(work_file, chunk_start, chunk_end,
                               chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
-                              chunk_photobest, bands, chunk_chi2grid, zgrid)
+                              chunk_photobest, bands, chunk_chi2grid, zgrid;
+                              pz_gt=chunk_pz_gt, Sz=chunk_Sz, z_integers=z_integers)
             
             # Progress is now updated per-object within the threaded tasks
             objects_processed += chunk_nobj
