@@ -402,6 +402,14 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
         end
         create_dataset(g_results, "Sz", Float64, (nobj,))
 
+        # Pz bins (integer-centered unit bins)
+        Sz_bc = collect(0.0:1.0:maximum(zgrid))
+        for bc in Sz_bc
+            create_dataset(g_results, "Pz$(Int(bc))", Float32, (nobj,))
+        end
+        create_dataset(g_results, "Pz_cen", Float32, (nobj,))
+        create_dataset(g_results, "Pz_zgtrzb2", Float32, (nobj,))
+
         # Optional full P(z) grid with compression
         output_pz = get(param["io"], "output_pz", false)
         if output_pz
@@ -481,16 +489,7 @@ function check_resume_file(filename::String)
 end
 
 """
-    write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
-                       IDs::Vector{<:Integer}, zbest::Vector{Float64},
-                       chi2best::Vector{Float64}, coeffsbest::Matrix{Float64},
-                       z_l95::Vector{Float64}, z_l68::Vector{Float64},
-                       z_med::Vector{Float64}, z_u68::Vector{Float64},
-                       z_u95::Vector{Float64}, photobest::Matrix{Float64},
-                       bands::Vector{String}, chi2grid=nothing,
-                       zgrid=nothing; pz_gt=nothing, Sz=nothing, z_integers=nothing,
-                       restframe_mags=nothing,
-                       forced_lowz=nothing)
+    write_chunk_results(filename, chunk_start, chunk_end, ...)
 
 Write a chunk of results to the HDF5 work file.
 """
@@ -505,6 +504,10 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            pz_gt::Union{Nothing,Matrix{Float32}}=nothing,
                            Sz::Union{Nothing,Vector{Float64}}=nothing,
                            z_integers::Union{Nothing,Vector{Int}}=nothing,
+                           pz_bins::Union{Nothing,Matrix{Float32}}=nothing,
+                           pz_bin_centers::Union{Nothing,Vector{Float64}}=nothing,
+                           pz_cen::Union{Nothing,Vector{Float32}}=nothing,
+                           pz_zgtrzb2::Union{Nothing,Vector{Float32}}=nothing,
                            restframe_mags::Union{Nothing,Matrix{Float64}}=nothing,
                            forced_lowz::Union{Nothing,Dict}=nothing)
     
@@ -554,6 +557,22 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
             end
             if Sz !== nothing && haskey(file["results"], "Sz")
                 file["results/Sz"][chunk_start:chunk_end] = Sz
+            end
+
+            # Write Pz bin probabilities
+            if pz_bins !== nothing && pz_bin_centers !== nothing
+                for (i, bc) in enumerate(pz_bin_centers)
+                    key = "Pz$(Int(bc))"
+                    if haskey(file["results"], key)
+                        file["results/$key"][chunk_start:chunk_end] = pz_bins[:, i]
+                    end
+                end
+            end
+            if pz_cen !== nothing && haskey(file["results"], "Pz_cen")
+                file["results/Pz_cen"][chunk_start:chunk_end] = pz_cen
+            end
+            if pz_zgtrzb2 !== nothing && haskey(file["results"], "Pz_zgtrzb2")
+                file["results/Pz_zgtrzb2"][chunk_start:chunk_end] = pz_zgtrzb2
             end
 
             # Write rest-frame absolute magnitudes
@@ -726,6 +745,21 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
             data["Sz"] = Dict("format" => "E", "data" => read(h5f["results/Sz"]))
         end
 
+        # Pz bin columns
+        Sz_bc_py = collect(0:floor(Int, maximum(zgrid_py)))
+        has_pz_bins_py = !isempty(Sz_bc_py) && haskey(h5f["results"], "Pz$(Sz_bc_py[1])")
+        if has_pz_bins_py
+            for bc in Sz_bc_py
+                data["Pz$(bc)"] = Dict("format" => "E", "data" => read(h5f["results/Pz$(bc)"]))
+            end
+        end
+        if haskey(h5f["results"], "Pz_cen")
+            data["Pz_cen"] = Dict("format" => "E", "data" => read(h5f["results/Pz_cen"]))
+        end
+        if haskey(h5f["results"], "Pz_zgtrzb2")
+            data["Pz_zgtrzb2"] = Dict("format" => "E", "data" => read(h5f["results/Pz_zgtrzb2"]))
+        end
+
         # Rest-frame magnitudes
         has_restframe_mags_py = haskey(h5f["results"], "M_UV")
         if has_restframe_mags_py
@@ -872,6 +906,23 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 push!(summary_coldefs, ("Sz", "1E", ""))
             end
 
+            # Pz bin columns (integer-centered unit bins)
+            Sz_bc_fits = collect(0:floor(Int, maximum(zgrid_full)))
+            has_pz_bins = !isempty(Sz_bc_fits) && haskey(h5f["results"], "Pz$(Sz_bc_fits[1])")
+            if has_pz_bins
+                for bc in Sz_bc_fits
+                    push!(summary_coldefs, ("Pz$(bc)", "1E", ""))
+                end
+            end
+            has_pz_cen = haskey(h5f["results"], "Pz_cen")
+            if has_pz_cen
+                push!(summary_coldefs, ("Pz_cen", "1E", ""))
+            end
+            has_pz_zgtrzb2 = haskey(h5f["results"], "Pz_zgtrzb2")
+            if has_pz_zgtrzb2
+                push!(summary_coldefs, ("Pz_zgtrzb2", "1E", ""))
+            end
+
             # Rest-frame magnitude columns
             has_restframe_mags = haskey(h5f["results"], "M_UV")
             if has_restframe_mags
@@ -932,6 +983,17 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 end
                 if has_Sz
                     CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/Sz"][cs:ce])); colnum += 1
+                end
+                if has_pz_bins
+                    for bc in Sz_bc_fits
+                        CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/Pz$(bc)"][cs:ce])); colnum += 1
+                    end
+                end
+                if has_pz_cen
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/Pz_cen"][cs:ce])); colnum += 1
+                end
+                if has_pz_zgtrzb2
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/Pz_zgtrzb2"][cs:ce])); colnum += 1
                 end
                 if has_restframe_mags
                     for mag_name in ["M_UV", "M_U", "M_V", "M_J"]

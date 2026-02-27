@@ -875,12 +875,16 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_z_u68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.840)))]
             chunk_z_u95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.975)))]
 
-            # Integrated P(z) quantities: P(z > Z) and Sz
+            # Integrated P(z) quantities: P(z > Z), Sz, Pz bins, Pz_cen, Pz_zgtrzb2
             z_integers = collect(1:floor(Int, maximum(zgrid)))
             chunk_pz_gt = fill(Float32(-1), chunk_nobj, length(z_integers))
             z_max_grid = maximum(zgrid)
             Sz_bc = collect(0.0:1.0:z_max_grid)
+            n_bins = length(Sz_bc)
             chunk_Sz = fill(-1.0, chunk_nobj)
+            chunk_pz_bins = fill(Float32(-1), chunk_nobj, n_bins)
+            chunk_pz_cen = fill(Float32(-1), chunk_nobj)
+            chunk_pz_zgtrzb2 = fill(Float32(-1), chunk_nobj)
 
             for j in 1:chunk_nobj
                 total = trapz(zgrid, @view pz_chunk[j, :])
@@ -894,21 +898,38 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 end
 
                 # Sz: center of the unit-width bin with the most P(z)
+                # Also store per-bin integrated probabilities
                 best_prob = -1.0
                 best_bc = -1.0
-                for bc in Sz_bc
+                for (bin_idx, bc) in enumerate(Sz_bc)
                     zlo = bc == 0.0 ? 0.0 : bc - 0.5
                     zhi = bc == z_max_grid ? z_max_grid : bc + 0.5
                     ilo = searchsortedfirst(zgrid, zlo)
                     ihi = searchsortedlast(zgrid, zhi - eps())
                     ilo > ihi && continue
                     prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_chunk[j, ilo:ihi])) / total
+                    chunk_pz_bins[j, bin_idx] = Float32(prob)
                     if prob > best_prob
                         best_prob = prob
                         best_bc = bc
                     end
                 end
                 chunk_Sz[j] = best_bc
+
+                # Pz_cen: P(|z - zbest| < 0.15*(1+zbest))
+                zb = chunk_zbest[j]
+                if zb > 0
+                    dz_window = 0.15 * (1.0 + zb)
+                    ilo_cen = searchsortedfirst(zgrid, zb - dz_window)
+                    ihi_cen = searchsortedlast(zgrid, zb + dz_window)
+                    if ilo_cen <= ihi_cen
+                        chunk_pz_cen[j] = Float32(trapz(@view(zgrid[ilo_cen:ihi_cen]), @view(pz_chunk[j, ilo_cen:ihi_cen])) / total)
+                    end
+
+                    # Pz_zgtrzb2: P(zbest - 2 < z < zmax)
+                    ilo_zb2 = searchsortedfirst(zgrid, zb - 2.0)
+                    chunk_pz_zgtrzb2[j] = Float32(trapz(@view(zgrid[ilo_zb2:end]), @view(pz_chunk[j, ilo_zb2:end])) / total)
+                end
             end
 
             # Compute forced low-z derived quantities (needs chi2grid, so must come before nulling)
@@ -1006,6 +1027,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
                               chunk_photobest, bands, chunk_chi2grid, zgrid;
                               pz_gt=chunk_pz_gt, Sz=chunk_Sz, z_integers=z_integers,
+                              pz_bins=chunk_pz_bins, pz_bin_centers=Sz_bc,
+                              pz_cen=chunk_pz_cen, pz_zgtrzb2=chunk_pz_zgtrzb2,
                               restframe_mags=chunk_restframe_mags,
                               forced_lowz=chunk_forced_lowz)
             
