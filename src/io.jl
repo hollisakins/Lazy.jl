@@ -401,7 +401,10 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             g_pz = create_group(file, "pz")
             # Use chunking and compression for large chi2 grid
             chunk_size = min(1000, nobj)
-            create_dataset(g_pz, "chi2grid", Float32, (nobj, nz), 
+            create_dataset(g_pz, "chi2grid", Float32, (nobj, nz),
+                          chunk=(chunk_size, nz), compress=3)
+            # Store normalized P(z) alongside chi2grid for consistent output
+            create_dataset(g_pz, "pz", Float32, (nobj, nz),
                           chunk=(chunk_size, nz), compress=3)
         end
         
@@ -447,22 +450,24 @@ end
 
 """
     write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
-                       IDs::Vector{<:Integer}, zbest::Vector{Float64}, 
+                       IDs::Vector{<:Integer}, zbest::Vector{Float64},
                        chi2best::Vector{Float64}, coeffsbest::Matrix{Float64},
                        z_l95::Vector{Float64}, z_l68::Vector{Float64},
                        z_med::Vector{Float64}, z_u68::Vector{Float64},
                        z_u95::Vector{Float64}, photobest::Matrix{Float64},
-                       bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing)
+                       bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing,
+                       zgrid::Union{Nothing,Vector{Float64}}=nothing)
 
 Write a chunk of results to the HDF5 work file.
 """
 function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
-                           IDs::Vector{<:Integer}, zbest::Vector{Float64}, 
+                           IDs::Vector{<:Integer}, zbest::Vector{Float64},
                            chi2best::Vector{Float64}, coeffsbest::Matrix{Float64},
                            z_l95::Vector{Float64}, z_l68::Vector{Float64},
                            z_med::Vector{Float64}, z_u68::Vector{Float64},
                            z_u95::Vector{Float64}, photobest::Matrix{Float64},
-                           bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing)
+                           bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing,
+                           zgrid::Union{Nothing,Vector{Float64}}=nothing)
     
     try
         h5open(filename, "r+") do file
@@ -485,6 +490,19 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
             # Write P(z) if provided
             if chi2grid !== nothing && haskey(file, "pz/chi2grid")
                 file["pz/chi2grid"][chunk_start:chunk_end, :] = chi2grid
+
+                # Compute and store normalized P(z) per-chunk
+                if zgrid !== nothing && haskey(file, "pz/pz")
+                    pz_chunk = exp.(-0.5f0 .* chi2grid)
+                    # Normalize each row using trapezoidal integration
+                    for row in 1:size(pz_chunk, 1)
+                        norm = trapz(zgrid, @view pz_chunk[row, :])
+                        if norm > 0
+                            pz_chunk[row, :] ./= norm
+                        end
+                    end
+                    file["pz/pz"][chunk_start:chunk_end, :] = pz_chunk
+                end
             end
             
             # Update metadata (handle existing vs new datasets)
@@ -575,17 +593,18 @@ function finalize_hdf5_work_file(filename::String)
 end
 
 """
-    convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
+    convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
 
-Convert completed HDF5 work file to FITS format.
+Convert completed HDF5 work file to FITS format using PyCall/astropy.
+Preserved as fallback; use convert_hdf5_to_fits() for the default CFITSIO-based writer.
 """
-function convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
+function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
     h5open(hdf5_file, "r") do h5f
         # Read metadata
         meta = h5f["metadata"]
         bands = read(meta, "bands")
         nobj = read(meta, "nobj")
-        
+
         # Read results
         IDs = read(h5f["results/ID"])
         zbest = read(h5f["results/zbest"])
@@ -596,7 +615,7 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
         z_u68 = read(h5f["results/z_u68"])
         z_u95 = read(h5f["results/z_u95"])
         coeffsbest = read(h5f["results/coeffs"])
-        
+
         # Prepare data for FITS
         data = OrderedDict{String, Dict{String, Any}}()
         data["ID"] = Dict("format" => "K", "data" => IDs)
@@ -612,60 +631,60 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
         data["z_med"] = Dict("format" => "E", "data" => z_med)
         data["z_u68"] = Dict("format" => "E", "data" => z_u68)
         data["z_u95"] = Dict("format" => "E", "data" => z_u95)
-        
+
         # Add photometry
         for (i, band) in enumerate(bands)
             photobest_band = read(h5f["photometry/$band"])
             data[band] = Dict("format" => "E", "unit" => "fnu", "data" => photobest_band)
         end
-        
+
         ntempl = size(coeffsbest, 2)
         data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
-        
+
         # Write SUMMARY extension
         write_data(fits_file, data, "SUMMARY")
-        
+
         # Write P(z) if it exists
         if haskey(h5f, "pz/chi2grid")
             zgrid = read(meta, "zgrid")
             chi2grid = read(h5f["pz/chi2grid"])
-            
+
             # Convert chi2 to P(z)
             pz = exp.(-0.5 * chi2grid)
             pz = pz ./ trapz(zgrid, pz)
-            
+
             # Format for FITS
             temp_pz = vcat(transpose(zgrid), pz)
             temp_IDs = vcat([-1], IDs)
-            
+
             nz = length(zgrid)
             data_pz = OrderedDict{String, Dict{String, Any}}()
             data_pz["ID"] = Dict("format" => "K", "data" => temp_IDs)
             data_pz["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
-            
+
             write_data(fits_file, data_pz, "PZ")
         end
-        
+
         # Write TEMPL extension if it exists
         if haskey(h5f, "templates")
             zgrid = read(meta, "zgrid")
             templates = read(meta, "templates")
             wavelength_grid = read(h5f["templates/wavelength"])
-            
+
             nwav = length(wavelength_grid)
-            
+
             # Prepare data for FITS (matching original format exactly)
             data_templ = OrderedDict{String, Dict{String, Any}}()
             temp_zgrid = vcat([-1], zgrid)
             data_templ["z"] = Dict("format" => "E", "data" => temp_zgrid)
-            
+
             for template in templates
                 template_name = basename(template)
                 template_name = splitext(template_name)[1]
-                
+
                 # Read template data (stored as (nwav, nz) format)
                 template_data = read(h5f["templates/$template_name"])
-                
+
                 # Format for FITS output (matching original exactly)
                 # Need to transpose template_data back to (nz, nwav) for FITS format
                 # FITS format: (nz+1, nwav) where first row is wavelength, then nz rows of template flux
@@ -673,8 +692,143 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String)
                 temp_template_data = vcat(transpose(wavelength_grid), template_data_transposed)
                 data_templ[template_name] = Dict("format" => "$(nwav)E", "data" => temp_template_data)
             end
-            
+
             write_data(fits_file, data_templ, "TEMPL")
+        end
+    end
+end
+
+"""
+    convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::Int=100_000)
+
+Convert completed HDF5 work file to FITS format using CFITSIO.jl with chunked writes.
+Reads data from HDF5 in chunks to avoid loading everything into memory at once.
+"""
+function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::Int=100_000)
+    h5open(hdf5_file, "r") do h5f
+        meta = h5f["metadata"]
+        nobj = read(meta, "nobj")
+        bands = read(meta, "bands")
+        ntempl = read(meta, "ntempl")
+        has_zspec = haskey(h5f["results"], "z_spec")
+
+        # Remove existing file if present
+        isfile(fits_file) && rm(fits_file)
+
+        ff = CFITSIO.fits_clobber_file(fits_file)
+        try
+            # ── SUMMARY extension ──
+            # Build column definitions: (name, tform, unit)
+            summary_coldefs = NTuple{3,String}[
+                ("ID", "1K", ""),
+                ("z_best", "1E", ""),
+                ("chi2", "1E", ""),
+            ]
+            if has_zspec
+                push!(summary_coldefs, ("z_spec", "1E", ""))
+            end
+            append!(summary_coldefs, [
+                ("z_l95", "1E", ""),
+                ("z_l68", "1E", ""),
+                ("z_med", "1E", ""),
+                ("z_u68", "1E", ""),
+                ("z_u95", "1E", ""),
+            ])
+            for band in bands
+                push!(summary_coldefs, (band, "1E", "fnu"))
+            end
+            push!(summary_coldefs, ("coeffs", "$(ntempl)E", ""))
+
+            CFITSIO.fits_create_binary_tbl(ff, nobj, summary_coldefs, "SUMMARY")
+
+            # Write SUMMARY in chunks
+            for cs in 1:chunk_size:nobj
+                ce = min(cs + chunk_size - 1, nobj)
+
+                colnum = 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Int64.(h5f["results/ID"][cs:ce])); colnum += 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/zbest"][cs:ce])); colnum += 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/chi2best"][cs:ce])); colnum += 1
+                if has_zspec
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_spec"][cs:ce])); colnum += 1
+                end
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_l95"][cs:ce])); colnum += 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_l68"][cs:ce])); colnum += 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_med"][cs:ce])); colnum += 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_u68"][cs:ce])); colnum += 1
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_u95"][cs:ce])); colnum += 1
+                for band in bands
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["photometry/$band"][cs:ce])); colnum += 1
+                end
+                # Coefficients: (n, ntempl) matrix — flatten row-major for FITS
+                coeffs_chunk = Float32.(h5f["results/coeffs"][cs:ce, :])
+                CFITSIO.fits_write_col(ff, colnum, cs, 1, vec(permutedims(coeffs_chunk))); colnum += 1
+            end
+
+            # ── PZ extension ──
+            if haskey(h5f, "pz/pz")
+                zgrid = read(meta, "zgrid")
+                nz = length(zgrid)
+
+                pz_coldefs = NTuple{3,String}[
+                    ("ID", "1K", ""),
+                    ("Pz", "$(nz)E", ""),
+                ]
+                CFITSIO.fits_create_binary_tbl(ff, nobj + 1, pz_coldefs, "PZ")
+
+                # Row 1: sentinel row with ID=-1 and Pz=zgrid
+                CFITSIO.fits_write_col(ff, 1, 1, 1, Int64[-1])
+                CFITSIO.fits_write_col(ff, 2, 1, 1, Float32.(zgrid))
+
+                # Remaining rows: chunked from pre-computed pz dataset
+                for cs in 1:chunk_size:nobj
+                    ce = min(cs + chunk_size - 1, nobj)
+                    ids_chunk = Int64.(h5f["results/ID"][cs:ce])
+                    pz_chunk = Float32.(h5f["pz/pz"][cs:ce, :])
+
+                    # Write to rows cs+1:ce+1 (offset by 1 for sentinel row)
+                    CFITSIO.fits_write_col(ff, 1, cs + 1, 1, ids_chunk)
+                    CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(permutedims(pz_chunk)))
+                end
+            end
+
+            # ── TEMPL extension ──
+            if haskey(h5f, "templates")
+                zgrid = read(meta, "zgrid")
+                nz = length(zgrid)
+                template_names_raw = read(meta, "templates")
+                wavelength_grid = read(h5f["templates/wavelength"])
+                nwav = length(wavelength_grid)
+
+                templ_coldefs = NTuple{3,String}[("z", "1E", "")]
+                template_names = String[]
+                for template in template_names_raw
+                    tname = splitext(basename(template))[1]
+                    push!(template_names, tname)
+                    push!(templ_coldefs, (tname, "$(nwav)E", ""))
+                end
+
+                nrows_templ = nz + 1  # 1 sentinel row + nz redshift rows
+                CFITSIO.fits_create_binary_tbl(ff, nrows_templ, templ_coldefs, "TEMPL")
+
+                # Row 1: sentinel with z=-1, template columns = wavelength grid
+                CFITSIO.fits_write_col(ff, 1, 1, 1, Float32[-1])
+                for (ti, tname) in enumerate(template_names)
+                    CFITSIO.fits_write_col(ff, 1 + ti, 1, 1, Float32.(wavelength_grid))
+                end
+
+                # Rows 2..nz+1: redshift grid values and template fluxes
+                CFITSIO.fits_write_col(ff, 1, 2, 1, Float32.(zgrid))
+                for (ti, tname) in enumerate(template_names)
+                    # Template data stored as (nwav, nz) in HDF5; need (nz, nwav) for FITS rows
+                    template_data = read(h5f["templates/$tname"])  # (nwav, nz)
+                    template_transposed = Float32.(permutedims(template_data))  # (nz, nwav)
+                    CFITSIO.fits_write_col(ff, 1 + ti, 2, 1, vec(template_transposed))
+                end
+            end
+
+        finally
+            CFITSIO.fits_close_file(ff)
         end
     end
 end

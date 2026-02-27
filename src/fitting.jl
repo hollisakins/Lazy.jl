@@ -177,6 +177,47 @@ function precompute_template_errors(zgrid::Vector{Float64}, pivot_wavs::Vector{F
     return template_error_grid
 end
 
+"""
+    finalize_output(work_file, output_file, output_format, preserve_work_file)
+
+Handle final output dispatch based on output_format ("fits", "hdf5", or "both").
+"""
+function finalize_output(work_file::String, output_file::String, output_format::String, preserve_work_file::Bool)
+    if output_format == "fits" || output_format == "both"
+        # Derive FITS filename from output_file
+        fits_file = endswith(output_file, ".fits") ? output_file : splitext(output_file)[1] * ".fits"
+        println("💾 Exporting to FITS: $fits_file")
+        convert_hdf5_to_fits(work_file, fits_file)
+    end
+
+    if output_format == "hdf5" || output_format == "both"
+        # Derive HDF5 filename from output_file
+        hdf5_file = if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
+            output_file
+        else
+            splitext(output_file)[1] * ".h5"
+        end
+
+        if output_format == "both"
+            # Copy work file (don't move — still need it or preserve_work_file may keep it)
+            cp(work_file, hdf5_file, force=true)
+        else
+            mv(work_file, hdf5_file, force=true)
+        end
+        println("✅ Results saved to: $hdf5_file")
+    end
+
+    # Clean up work file if it still exists and we're not preserving it
+    if isfile(work_file)
+        if preserve_work_file
+            println("💾 Work file preserved: $work_file")
+        else
+            rm(work_file)
+            println("🗑️ Work file automatically removed: $work_file")
+        end
+    end
+end
+
 function fit(param)
 
     # Load in TOML parameter file
@@ -214,6 +255,21 @@ function fit(param)
             output_templ = io["output_templates"]
         else
             output_templ = false
+        end
+
+        # Parse output format: "fits", "hdf5", or "both"
+        # If not specified, infer from output_file extension
+        output_format = get(io, "output_format", nothing)
+        if output_format === nothing
+            if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
+                output_format = "hdf5"
+            else
+                output_format = "fits"
+            end
+        end
+        output_format = lowercase(output_format)
+        if !(output_format in ["fits", "hdf5", "both"])
+            throw(LazyError("parameter `io.output_format` must be 'fits', 'hdf5', or 'both' (got '$output_format')"))
         end
     else
         throw(LazyError("section `io` not found in the parameter file"))
@@ -493,7 +549,7 @@ function fit(param)
                        templates, nobj, nz, nband, ntempl, fnu, efnu, IDs,
                        nphot_min, output_file, output_pz, output_templ,
                        target_memory_gb, preserve_work_file, chunked_processing,
-                       use_zspec, zspec)
+                       use_zspec, zspec, output_format)
 end
 
 """
@@ -503,11 +559,12 @@ end
                   fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
                   nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
                   target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool,
-                  use_zspec::Bool, zspec::Vector{Float64})
+                  use_zspec::Bool, zspec::Vector{Float64}, output_format::String="fits")
 
 Main streaming fit function that handles both chunked and in-memory processing modes.
 When chunked_processing=false, uses single chunk (in-memory mode).
 When chunked_processing=true, uses memory-controlled chunking.
+output_format controls final output: "fits", "hdf5", or "both".
 """
 function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                       zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
@@ -515,7 +572,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                       fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
                       nphot_min::Int, output_file::String, output_pz::Bool, output_templ::Bool,
                       target_memory_gb::Float64, preserve_work_file::Bool, chunked_processing::Bool,
-                      use_zspec::Bool, zspec::Vector{Float64})
+                      use_zspec::Bool, zspec::Vector{Float64}, output_format::String="fits")
     
     # CGM params (read from fitting section)
     fitting = param["fitting"]
@@ -542,27 +599,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             finalize_hdf5_work_file(work_file)
             
             # Jump to output conversion
-            final_output = output_file
-            if endswith(output_file, ".fits")
-                println("💾 Converting HDF5 to FITS format: $output_file")
-                convert_hdf5_to_fits(work_file, output_file)
-                
-                # Handle work file based on preserve_work_file setting
-                if preserve_work_file
-                    println("💾 Work file preserved: $work_file")
-                else
-                    rm(work_file)
-                    println("🗑️ Work file automatically removed: $work_file")
-                end
-            else
-                # Keep HDF5 format
-                if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
-                    mv(work_file, final_output, force=true)
-                    println("✅ Results saved to: $final_output")
-                else
-                    println("✅ Results saved to: $work_file")
-                end
-            end
+            finalize_output(work_file, output_file, output_format, preserve_work_file)
             return 0  # Exit early for complete runs
         elseif action == "keep"
             println("💾 Keeping work file and exiting...")
@@ -730,7 +767,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             write_chunk_results(work_file, chunk_start, chunk_end,
                               chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
-                              chunk_photobest, bands, chunk_chi2grid)
+                              chunk_photobest, bands, chunk_chi2grid, zgrid)
             
             # Progress is now updated per-object within the threaded tasks
             objects_processed += chunk_nobj
@@ -763,30 +800,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
         finalize_hdf5_work_file(work_file)
         
         # Handle output format and work file preservation
-        final_output = output_file
-        if endswith(output_file, ".fits")
-            println("💾 Exporting to FITS: $output_file")
-            convert_hdf5_to_fits(work_file, output_file)
-            
-            # Handle work file based on preserve_work_file setting
-            if preserve_work_file
-                println("💾 Work file preserved: $work_file")
-            else
-                rm(work_file)
-                println("🗑️ Work file automatically removed: $work_file")
-            end
-        else
-            # Keep HDF5 format
-            if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
-                mv(work_file, final_output, force=true)
-                println("✅ Results saved to: $final_output")
-            else
-                # Output file doesn't have recognized extension, default to HDF5
-                hdf5_output = output_file * ".h5"
-                mv(work_file, hdf5_output, force=true)
-                println("⚠️  Output file '$output_file' has unrecognized extension, saved as HDF5: $hdf5_output")
-            end
-        end
+        finalize_output(work_file, output_file, output_format, preserve_work_file)
         
     catch e
         if isa(e, InterruptException)

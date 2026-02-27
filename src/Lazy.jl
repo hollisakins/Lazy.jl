@@ -48,14 +48,21 @@ end
 
 
 using PyCall
+using CFITSIO
 const writedata = PyNULL()
-function __init__()
-    pyimport_conda("astropy.io", "astropy")
-    pushfirst!(pyimport("sys")."path", @__DIR__())
-    copy!(writedata, pyimport("writedata"))
+const _python_initialized = Ref(false)
+
+function ensure_python_initialized()
+    if !_python_initialized[]
+        pyimport_conda("astropy.io", "astropy")
+        pushfirst!(pyimport("sys")."path", @__DIR__())
+        copy!(writedata, pyimport("writedata"))
+        _python_initialized[] = true
+    end
 end
 
 function write_data(filename, data, extname)
+    ensure_python_initialized()
     return writedata.write_data(filename, data, extname)
 end
 

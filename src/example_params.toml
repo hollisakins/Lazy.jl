@@ -9,8 +9,12 @@
     # Format for missing data in the input catalog (e.g. 'nan' or -99) 
     missing_data_format = 'nan' 
 
-    # Name of the output file (format determined by extension: .fits, .h5, .hdf5)
+    # Name of the output file
     output_file = '/path/to/lazy_results.fits'
+
+    # Output format: 'fits', 'hdf5', or 'both'
+    # If not specified, format is inferred from the output_file extension
+    # output_format = 'fits'
     
     # Whether to output the redshift probability distribution for each object
     # If true, outputs to output_file in extension "PZ" 
