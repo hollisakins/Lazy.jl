@@ -72,7 +72,7 @@
         'sfhz/corr_sfhz_13_bin0_av0.50.fits',
         'sfhz/corr_sfhz_13_bin0_av0.25.fits',
         'sfhz/corr_sfhz_13_bin0_av0.01.fits',
-        # 'Larson22/binc100z001age6.dat',
+        'Larson22/binc100z001age6.dat',
         'Larson22/binc100z001age6_cloudy.dat',
         'Larson22/binc100z001age65_cloudy.dat',
         'Larson22/binc100z001age65.dat',
@@ -105,3 +105,234 @@
         'misc/schrodinger.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), schrodinger"
+
+
+# ── fsps_Larson22 + schr / LRD variants ─────────────────────────────────────
+
+[fsps_Larson22_schr]
+    files = [
+        'fsps_full/tweak_fsps_QSF_12_v3_001.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_002.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_003.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_004.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_005.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_006.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_007.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_008.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_009.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_010.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_011.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_012.dat',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+        'misc/schrodinger.dat',
+    ]
+    attribution = "fsps, Larson et al. (2022), schrodinger"
+
+[fsps_Larson22_lrd]
+    files = [
+        'fsps_full/tweak_fsps_QSF_12_v3_001.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_002.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_003.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_004.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_005.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_006.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_007.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_008.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_009.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_010.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_011.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_012.dat',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+        'misc/lrd.dat',
+    ]
+    attribution = "fsps, Larson et al. (2022), LRD"
+
+[fsps_Larson22_schr_lrd]
+    files = [
+        'fsps_full/tweak_fsps_QSF_12_v3_001.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_002.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_003.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_004.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_005.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_006.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_007.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_008.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_009.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_010.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_011.dat',
+        'fsps_full/tweak_fsps_QSF_12_v3_012.dat',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+        'misc/schrodinger.dat',
+        'misc/lrd.dat',
+    ]
+    attribution = "fsps, Larson et al. (2022), schrodinger, LRD"
+
+
+# ── sfhz + schr / LRD variants ───────────────────────────────────────────────
+
+[sfhz_schr]
+    files = [
+        'sfhz/corr_sfhz_13_bin3_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin3_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin2_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin1_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin0_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.01.fits',
+        'misc/schrodinger.dat',
+    ]
+    attribution = "eazy, fsps, Gabe Brammer, schrodinger"
+
+[sfhz_lrd]
+    files = [
+        'sfhz/corr_sfhz_13_bin3_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin3_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin2_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin1_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin0_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.01.fits',
+        'misc/lrd.dat',
+    ]
+    attribution = "eazy, fsps, Gabe Brammer, LRD"
+
+[sfhz_schr_lrd]
+    files = [
+        'sfhz/corr_sfhz_13_bin3_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin3_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin2_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin1_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin0_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.01.fits',
+        'misc/schrodinger.dat',
+        'misc/lrd.dat',
+    ]
+    attribution = "eazy, fsps, Gabe Brammer, schrodinger, LRD"
+
+
+# ── sfhz_Larson22 + schr / LRD variants ─────────────────────────────────────
+# Note: sfhz_Larson22 + schr alone is already covered by the existing sfhz_Larson22_schr set.
+
+[sfhz_Larson22_lrd]
+    files = [
+        'sfhz/corr_sfhz_13_bin3_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin3_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin2_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin1_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin0_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.01.fits',
+        # 'Larson22/binc100z001age6.dat',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age65.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+        'Larson22/binc100z001age7.dat',
+        'misc/lrd.dat',
+    ]
+    attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), LRD"
+
+[sfhz_Larson22_schr_lrd]
+    files = [
+        'sfhz/corr_sfhz_13_bin3_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin3_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin2_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin2_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin1_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin1_av0.01.fits',
+        'sfhz/corr_sfhz_13_bin0_av1.00.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.50.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.25.fits',
+        'sfhz/corr_sfhz_13_bin0_av0.01.fits',
+        # 'Larson22/binc100z001age6.dat',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age65.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+        'Larson22/binc100z001age7.dat',
+        'misc/schrodinger.dat',
+        'misc/lrd.dat',
+    ]
+    attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), schrodinger, LRD"
+
+
+# ── JADES template sets ───────────────────────────────────────────────────────
+
+[jades]
+    files = [
+        'jades/eazy_v1.1_sed1.sed',
+        'jades/eazy_v1.1_sed2.sed',
+        'jades/eazy_v1.1_sed3.sed',
+        'jades/eazy_v1.1_sed4.sed',
+        'jades/eazy_v1.1_sed5.sed',
+        'jades/eazy_v1.1_sed6.sed',
+        'jades/eazy_v1.1_sed7.sed',
+        'jades/JADES_v1.0_1.sed',
+        'jades/JADES_v1.0_2.sed',
+        'jades/JADES_v1.0_3.sed',
+        'jades/JADES_v1.0_4.sed',
+        'jades/JADES_v1.0_5.sed',
+        'jades/JADES_v1.0_6.sed',
+        'jades/JADES_v1.0_7.sed',
+        'jades/c09_del_8.6_z_0.019_chab_age09.40_av2.0.sed',
+        'jades/erb2010_highEW.sed',
+    ]
+    attribution = "Hainline et al., Brammer et al. (2008), Coe et al. (2006), Erb et al. (2010)"
+
+[jades_Larson22]
+    files = [
+        'jades/eazy_v1.1_sed1.sed',
+        'jades/eazy_v1.1_sed2.sed',
+        'jades/eazy_v1.1_sed3.sed',
+        'jades/eazy_v1.1_sed4.sed',
+        'jades/eazy_v1.1_sed5.sed',
+        'jades/eazy_v1.1_sed6.sed',
+        'jades/eazy_v1.1_sed7.sed',
+        'jades/JADES_v1.0_1.sed',
+        'jades/JADES_v1.0_2.sed',
+        'jades/JADES_v1.0_3.sed',
+        'jades/JADES_v1.0_4.sed',
+        'jades/JADES_v1.0_5.sed',
+        'jades/JADES_v1.0_6.sed',
+        'jades/JADES_v1.0_7.sed',
+        'jades/c09_del_8.6_z_0.019_chab_age09.40_av2.0.sed',
+        'jades/erb2010_highEW.sed',
+        'Larson22/binc100z001age6_cloudy.dat',
+        'Larson22/binc100z001age65_cloudy.dat',
+        'Larson22/binc100z001age7_cloudy.dat',
+    ]
+    attribution = "Hainline et al., Brammer et al. (2008), Coe et al. (2006), Erb et al. (2010), Larson et al. (2022)"
