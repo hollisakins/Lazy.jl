@@ -58,7 +58,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                           templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
                           interrupted_flag::Union{Nothing,Ref{Bool}}=nothing,
-                          z_fix_idx::Int=-1)
+                          z_fix_idx::Int=-1, lowz_max_idx::Int=-1)
     
     # Wrap entire function in try-catch to handle individual object failures gracefully
     try
@@ -79,6 +79,11 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         best_chi2 = Inf
         best_z_idx = 0
         best_coeffs = zeros(ntempl)
+
+        # Track best fit in low-z range (for forced low-z output)
+        lowz_best_chi2 = Inf
+        lowz_best_z_idx = 0
+        lowz_best_coeffs = zeros(ntempl)
 
         # Loop over redshifts for this object
         for i in z_range
@@ -156,6 +161,13 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 best_z_idx = i
                 best_coeffs = result
             end
+
+            # Update low-z best fit if within restricted range
+            if lowz_max_idx > 0 && i <= lowz_max_idx && chi2_j < lowz_best_chi2
+                lowz_best_chi2 = chi2_j
+                lowz_best_z_idx = i
+                lowz_best_coeffs = copy(result)
+            end
         end
     
         # Determine final results
@@ -168,8 +180,20 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             chi2best = -1.0
             coeffsbest = zeros(ntempl)
         end
-        
-        return (zbest, chi2best, coeffsbest, chi2_row)
+
+        # Determine low-z results
+        if lowz_best_z_idx > 0
+            zbest_lowz = zgrid[lowz_best_z_idx]
+            chi2best_lowz = lowz_best_chi2
+            coeffsbest_lowz = lowz_best_coeffs
+        else
+            zbest_lowz = -1.0
+            chi2best_lowz = -1.0
+            coeffsbest_lowz = zeros(ntempl)
+        end
+
+        return (zbest, chi2best, coeffsbest, chi2_row,
+                zbest_lowz, chi2best_lowz, coeffsbest_lowz)
         
     catch e
         # Handle any unexpected errors for this individual object
@@ -180,8 +204,9 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         chi2best_failed = -1.0
         coeffsbest_failed = zeros(ntempl)
         chi2_row_failed = fill(Float32(-1.0), nz)
-        
-        return (zbest_failed, chi2best_failed, coeffsbest_failed, chi2_row_failed)
+
+        return (zbest_failed, chi2best_failed, coeffsbest_failed, chi2_row_failed,
+                -1.0, -1.0, zeros(ntempl))
     end
 end
 
@@ -319,6 +344,10 @@ function fit(param)
             println("📊 Rest-frame magnitudes: enabled (flux_units=$flux_units, H0=$cosmo_H0, Om=$cosmo_Om)")
         end
 
+        # Forced low-z fit
+        output_forced_lowz = get(io, "output_forced_lowz", false)
+        forced_lowz_zmax = 0.0
+
         # Parse output format: "fits", "hdf5", or "both"
         # If not specified, infer from output_file extension
         output_format = get(io, "output_format", nothing)
@@ -454,6 +483,18 @@ function fit(param)
 
     zgrid = collect(range(z_min, stop=z_max, step=z_step))
     nz = length(zgrid)
+
+    # Validate forced low-z config (needs z_min/z_max)
+    if output_forced_lowz
+        if !haskey(io, "forced_lowz_zmax")
+            throw(LazyError("parameter `io.forced_lowz_zmax` is required when output_forced_lowz = true"))
+        end
+        forced_lowz_zmax = Float64(io["forced_lowz_zmax"])
+        if forced_lowz_zmax <= z_min || forced_lowz_zmax >= z_max
+            throw(LazyError("forced_lowz_zmax ($forced_lowz_zmax) must be between z_min ($z_min) and z_max ($z_max)"))
+        end
+        println("📊 Forced low-z fit: enabled (z_max = $forced_lowz_zmax)")
+    end
 
     println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
@@ -623,7 +664,9 @@ function fit(param)
                        use_zspec, zspec, output_format;
                        output_restframe_mags=output_restframe_mags,
                        restframe_templgrid=restframe_templgrid,
-                       flux_zp=flux_zp, cosmo_H0=cosmo_H0, cosmo_Om=cosmo_Om)
+                       flux_zp=flux_zp, cosmo_H0=cosmo_H0, cosmo_Om=cosmo_Om,
+                       output_forced_lowz=output_forced_lowz,
+                       forced_lowz_zmax=forced_lowz_zmax)
 end
 
 """
@@ -649,7 +692,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                       use_zspec::Bool, zspec::Vector{Float64}, output_format::String="fits";
                       output_restframe_mags::Bool=false,
                       restframe_templgrid::Union{Nothing,Array{Float64,3}}=nothing,
-                      flux_zp::Float64=0.0, cosmo_H0::Float64=70.0, cosmo_Om::Float64=0.3)
+                      flux_zp::Float64=0.0, cosmo_H0::Float64=70.0, cosmo_Om::Float64=0.3,
+                      output_forced_lowz::Bool=false, forced_lowz_zmax::Float64=0.0)
     
     # CGM params (read from fitting section)
     fitting = param["fitting"]
@@ -719,6 +763,9 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
         end
     end
     
+    # Precompute forced low-z index
+    iz_lowz_max = output_forced_lowz ? searchsortedlast(zgrid, forced_lowz_zmax) : -1
+
     # Initialize progress tracking
     total_remaining = nobj - start_obj + 1
     progress_bar = ProgressBar(total_remaining, "Fitting objects...", 
@@ -748,28 +795,35 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_chi2best = zeros(chunk_nobj)
             chunk_coeffsbest = zeros(chunk_nobj, ntempl)
             chunk_chi2grid = zeros(Float32, chunk_nobj, nz)
-            
+
+            # Forced low-z result arrays
+            chunk_zbest_lowz = fill(-1.0, chunk_nobj)
+            chunk_chi2best_lowz = fill(-1.0, chunk_nobj)
+            chunk_coeffsbest_lowz = zeros(chunk_nobj, ntempl)
+
             # Fit objects in this chunk using threading
             nthreads_to_use = min(Threads.nthreads(), chunk_nobj)
             objects_per_task = max(1, chunk_nobj ÷ nthreads_to_use)
             ntasks = cld(chunk_nobj, objects_per_task)
-            
+
             tasks = Vector{Task}(undef, ntasks)
             for task_id in 1:ntasks
                 task_start = (task_id - 1) * objects_per_task + 1
                 task_end = min(task_id * objects_per_task, chunk_nobj)
-                
+
                 tasks[task_id] = Threads.@spawn begin
-                    batch_results = Vector{Tuple{Int, Float64, Float64, Vector{Float64}, Vector{Float32}}}()
-                    
+                    batch_results = Vector{Tuple{Int, Float64, Float64, Vector{Float64}, Vector{Float32},
+                                                 Float64, Float64, Vector{Float64}}}()
+
                     for j_local in task_start:task_end
                         # Check for interruption before starting work
                         if interrupted[]
-                            push!(batch_results, (j_local, -1.0, -1.0, zeros(ntempl), fill(Float32(-1.0), nz)))
+                            push!(batch_results, (j_local, -1.0, -1.0, zeros(ntempl), fill(Float32(-1.0), nz),
+                                                  -1.0, -1.0, zeros(ntempl)))
                             increment!(progress_bar)
                             continue
                         end
-                        
+
                         j_global = chunk_start + j_local - 1
 
                         # Compute fixed redshift index if z_spec available
@@ -778,29 +832,36 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                             z_fix_idx_j = argmin(abs.(zgrid .- zspec[j_global]))
                         end
 
-                        zbest_j, chi2best_j, coeffsbest_j, chi2_row_j = fit_single_object(
+                        zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
+                            zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j = fit_single_object(
                             j_global, chunk_fnu[j_local,:], chunk_efnu[j_local,:],
                             templgrid, template_error_grid, zgrid, nphot_min,
                             nband, ntempl, nz;
-                            interrupted_flag=interrupted, z_fix_idx=z_fix_idx_j
+                            interrupted_flag=interrupted, z_fix_idx=z_fix_idx_j,
+                            lowz_max_idx=iz_lowz_max
                         )
-                        
-                        push!(batch_results, (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j))
+
+                        push!(batch_results, (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
+                                              zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j))
                         increment!(progress_bar)
                     end
-                    
+
                     return batch_results
                 end
             end
-            
+
             # Collect results from tasks
             for task in tasks
                 batch_results = fetch(task)
-                for (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j) in batch_results
+                for (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
+                     zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j) in batch_results
                     chunk_zbest[j_local] = zbest_j
                     chunk_chi2best[j_local] = chi2best_j
                     chunk_coeffsbest[j_local, :] = coeffsbest_j
                     chunk_chi2grid[j_local, :] = chi2_row_j
+                    chunk_zbest_lowz[j_local] = zbest_lowz_j
+                    chunk_chi2best_lowz[j_local] = chi2best_lowz_j
+                    chunk_coeffsbest_lowz[j_local, :] = coeffsbest_lowz_j
                 end
             end
             
@@ -850,11 +911,59 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 chunk_Sz[j] = best_bc
             end
 
+            # Compute forced low-z derived quantities (needs chi2grid, so must come before nulling)
+            chunk_forced_lowz = nothing
+            if output_forced_lowz
+                chunk_delta_chi2 = fill(NaN, chunk_nobj)
+                for j in 1:chunk_nobj
+                    if chunk_chi2best[j] > 0 && chunk_chi2best_lowz[j] > 0
+                        chunk_delta_chi2[j] = chunk_chi2best_lowz[j] - chunk_chi2best[j]
+                    end
+                end
+
+                # Lowz P(z) quantiles from chi2 grid restricted to [1:iz_lowz_max]
+                lowz_chi2 = chunk_chi2grid[:, 1:iz_lowz_max]
+                lowz_pz = exp.(-0.5 * lowz_chi2)
+                lowz_cpz = cumsum(lowz_pz, dims=2) ./ sum(lowz_pz, dims=2)
+                lowz_zgrid = zgrid[1:iz_lowz_max]
+
+                chunk_z_l95_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.025)))]
+                chunk_z_l68_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.160)))]
+                chunk_z_med_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.500)))]
+                chunk_z_u68_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.840)))]
+                chunk_z_u95_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.975)))]
+
+                # Lowz best-fit photometry
+                chunk_photobest_lowz = zeros(chunk_nobj, nband)
+                for j_local in 1:chunk_nobj
+                    chunk_zbest_lowz[j_local] <= 0 && continue
+                    z_idx = argmin(abs.(zgrid .- chunk_zbest_lowz[j_local]))
+                    for k in 1:nband
+                        for t in 1:ntempl
+                            chunk_photobest_lowz[j_local, k] += templgrid[t, z_idx, k] * chunk_coeffsbest_lowz[j_local, t]
+                        end
+                    end
+                end
+
+                chunk_forced_lowz = Dict(
+                    "zbest" => chunk_zbest_lowz,
+                    "chi2best" => chunk_chi2best_lowz,
+                    "delta_chi2" => chunk_delta_chi2,
+                    "z_l95" => chunk_z_l95_lowz,
+                    "z_l68" => chunk_z_l68_lowz,
+                    "z_med" => chunk_z_med_lowz,
+                    "z_u68" => chunk_z_u68_lowz,
+                    "z_u95" => chunk_z_u95_lowz,
+                    "coeffs" => chunk_coeffsbest_lowz,
+                    "photobest" => chunk_photobest_lowz,
+                )
+            end
+
             # Only save full chi2 grid when output_pz is requested
             if !output_pz
                 chunk_chi2grid = nothing
             end
-            
+
             # Calculate best-fit photometry for this chunk
             chunk_photobest = zeros(chunk_nobj, nband)
             for j_local in 1:chunk_nobj
@@ -897,7 +1006,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
                               chunk_photobest, bands, chunk_chi2grid, zgrid;
                               pz_gt=chunk_pz_gt, Sz=chunk_Sz, z_integers=z_integers,
-                              restframe_mags=chunk_restframe_mags)
+                              restframe_mags=chunk_restframe_mags,
+                              forced_lowz=chunk_forced_lowz)
             
             # Progress is now updated per-object within the threaded tasks
             objects_processed += chunk_nobj

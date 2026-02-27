@@ -423,6 +423,23 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             end
         end
 
+        # Forced low-z fit
+        output_forced_lowz = get(param["io"], "output_forced_lowz", false)
+        if output_forced_lowz
+            create_dataset(g_results, "zbest_lowz", Float64, (nobj,))
+            create_dataset(g_results, "chi2best_lowz", Float64, (nobj,))
+            create_dataset(g_results, "delta_chi2", Float64, (nobj,))
+            create_dataset(g_results, "z_l95_lowz", Float64, (nobj,))
+            create_dataset(g_results, "z_l68_lowz", Float64, (nobj,))
+            create_dataset(g_results, "z_med_lowz", Float64, (nobj,))
+            create_dataset(g_results, "z_u68_lowz", Float64, (nobj,))
+            create_dataset(g_results, "z_u95_lowz", Float64, (nobj,))
+            create_dataset(g_results, "coeffs_lowz", Float64, (nobj, ntempl))
+            for band in bands
+                create_dataset(g_phot, "$(band)_lowz", Float64, (nobj,))
+            end
+        end
+
         # Optional templates group (datasets created when template data is written)
         output_templ = get(param["io"], "output_templates", false)
         if output_templ
@@ -472,7 +489,8 @@ end
                        z_u95::Vector{Float64}, photobest::Matrix{Float64},
                        bands::Vector{String}, chi2grid=nothing,
                        zgrid=nothing; pz_gt=nothing, Sz=nothing, z_integers=nothing,
-                       restframe_mags=nothing)
+                       restframe_mags=nothing,
+                       forced_lowz=nothing)
 
 Write a chunk of results to the HDF5 work file.
 """
@@ -487,7 +505,8 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            pz_gt::Union{Nothing,Matrix{Float32}}=nothing,
                            Sz::Union{Nothing,Vector{Float64}}=nothing,
                            z_integers::Union{Nothing,Vector{Int}}=nothing,
-                           restframe_mags::Union{Nothing,Matrix{Float64}}=nothing)
+                           restframe_mags::Union{Nothing,Matrix{Float64}}=nothing,
+                           forced_lowz::Union{Nothing,Dict}=nothing)
     
     try
         h5open(filename, "r+") do file
@@ -542,6 +561,26 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                 for (k, mag_name) in enumerate(["M_UV", "M_U", "M_V", "M_J"])
                     if haskey(file["results"], mag_name)
                         file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
+                    end
+                end
+            end
+
+            # Write forced low-z results
+            if forced_lowz !== nothing
+                if haskey(file["results"], "zbest_lowz")
+                    file["results/zbest_lowz"][chunk_start:chunk_end] = forced_lowz["zbest"]
+                    file["results/chi2best_lowz"][chunk_start:chunk_end] = forced_lowz["chi2best"]
+                    file["results/delta_chi2"][chunk_start:chunk_end] = forced_lowz["delta_chi2"]
+                    file["results/z_l95_lowz"][chunk_start:chunk_end] = forced_lowz["z_l95"]
+                    file["results/z_l68_lowz"][chunk_start:chunk_end] = forced_lowz["z_l68"]
+                    file["results/z_med_lowz"][chunk_start:chunk_end] = forced_lowz["z_med"]
+                    file["results/z_u68_lowz"][chunk_start:chunk_end] = forced_lowz["z_u68"]
+                    file["results/z_u95_lowz"][chunk_start:chunk_end] = forced_lowz["z_u95"]
+                    file["results/coeffs_lowz"][chunk_start:chunk_end, :] = forced_lowz["coeffs"]
+                    for (i, band) in enumerate(bands)
+                        if haskey(file["photometry"], "$(band)_lowz")
+                            file["photometry/$(band)_lowz"][chunk_start:chunk_end] = forced_lowz["photobest"][:, i]
+                        end
                     end
                 end
             end
@@ -695,6 +734,19 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
             end
         end
 
+        # Forced low-z columns
+        has_forced_lowz_py = haskey(h5f["results"], "zbest_lowz")
+        if has_forced_lowz_py
+            data["z_best_lowz"] = Dict("format" => "E", "data" => read(h5f["results/zbest_lowz"]))
+            data["chi2_lowz"] = Dict("format" => "E", "data" => read(h5f["results/chi2best_lowz"]))
+            data["delta_chi2"] = Dict("format" => "E", "data" => read(h5f["results/delta_chi2"]))
+            data["z_l95_lowz"] = Dict("format" => "E", "data" => read(h5f["results/z_l95_lowz"]))
+            data["z_l68_lowz"] = Dict("format" => "E", "data" => read(h5f["results/z_l68_lowz"]))
+            data["z_med_lowz"] = Dict("format" => "E", "data" => read(h5f["results/z_med_lowz"]))
+            data["z_u68_lowz"] = Dict("format" => "E", "data" => read(h5f["results/z_u68_lowz"]))
+            data["z_u95_lowz"] = Dict("format" => "E", "data" => read(h5f["results/z_u95_lowz"]))
+        end
+
         # Add photometry
         for (i, band) in enumerate(bands)
             photobest_band = read(h5f["photometry/$band"])
@@ -703,6 +755,14 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
 
         ntempl = size(coeffsbest, 2)
         data["coeffs"] = Dict("format" => "$(ntempl)E", "data" => coeffsbest)
+
+        if has_forced_lowz_py
+            for (i, band) in enumerate(bands)
+                data["$(band)_lowz"] = Dict("format" => "E", "unit" => "fnu", "data" => read(h5f["photometry/$(band)_lowz"]))
+            end
+            coeffs_lowz_py = read(h5f["results/coeffs_lowz"])
+            data["coeffs_lowz"] = Dict("format" => "$(ntempl)E", "data" => coeffs_lowz_py)
+        end
 
         # Write SUMMARY extension
         write_data(fits_file, data, "SUMMARY")
@@ -820,10 +880,32 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 end
             end
 
+            # Forced low-z columns
+            has_forced_lowz = haskey(h5f["results"], "zbest_lowz")
+            if has_forced_lowz
+                append!(summary_coldefs, [
+                    ("z_best_lowz", "1E", ""),
+                    ("chi2_lowz", "1E", ""),
+                    ("delta_chi2", "1E", ""),
+                    ("z_l95_lowz", "1E", ""),
+                    ("z_l68_lowz", "1E", ""),
+                    ("z_med_lowz", "1E", ""),
+                    ("z_u68_lowz", "1E", ""),
+                    ("z_u95_lowz", "1E", ""),
+                ])
+            end
+
             for band in bands
                 push!(summary_coldefs, (band, "1E", "fnu"))
             end
             push!(summary_coldefs, ("coeffs", "$(ntempl)E", ""))
+
+            if has_forced_lowz
+                for band in bands
+                    push!(summary_coldefs, ("$(band)_lowz", "1E", "fnu"))
+                end
+                push!(summary_coldefs, ("coeffs_lowz", "$(ntempl)E", ""))
+            end
 
             CFITSIO.fits_create_binary_tbl(ff, nobj, summary_coldefs, "SUMMARY")
 
@@ -856,12 +938,29 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                         CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/$mag_name"][cs:ce])); colnum += 1
                     end
                 end
+                if has_forced_lowz
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/zbest_lowz"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/chi2best_lowz"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/delta_chi2"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_l95_lowz"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_l68_lowz"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_med_lowz"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_u68_lowz"][cs:ce])); colnum += 1
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["results/z_u95_lowz"][cs:ce])); colnum += 1
+                end
                 for band in bands
                     CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["photometry/$band"][cs:ce])); colnum += 1
                 end
                 # Coefficients: (n, ntempl) matrix — flatten row-major for FITS
                 coeffs_chunk = Float32.(h5f["results/coeffs"][cs:ce, :])
                 CFITSIO.fits_write_col(ff, colnum, cs, 1, vec(permutedims(coeffs_chunk))); colnum += 1
+                if has_forced_lowz
+                    for band in bands
+                        CFITSIO.fits_write_col(ff, colnum, cs, 1, Float32.(h5f["photometry/$(band)_lowz"][cs:ce])); colnum += 1
+                    end
+                    coeffs_lowz_chunk = Float32.(h5f["results/coeffs_lowz"][cs:ce, :])
+                    CFITSIO.fits_write_col(ff, colnum, cs, 1, vec(permutedims(coeffs_lowz_chunk))); colnum += 1
+                end
             end
 
             # ── PZ extension ──

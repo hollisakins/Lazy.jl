@@ -33,6 +33,13 @@
     # H0 = 70.0                 # Hubble constant in km/s/Mpc (default: 70.0)
     # Om = 0.3                  # Matter density parameter (default: 0.3)
 
+    # Forced low-z fit (for high-z candidate validation)
+    # Performs a second fit restricted to z < forced_lowz_zmax alongside the main fit.
+    # Outputs z_best_lowz, chi2_lowz, delta_chi2, lowz P(z) quantiles,
+    # lowz model photometry, and lowz template coefficients.
+    # output_forced_lowz = true
+    # forced_lowz_zmax = 7.0
+
 [fitting]
     # Template set to use for fitting. This should correspond to an entry in the
     # "template_directory.toml" file. Use `lazy list-templates` to see the 
