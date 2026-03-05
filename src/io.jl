@@ -421,11 +421,11 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             g_pz = create_group(file, "pz")
             # Use chunking and compression for large chi2 grid
             chunk_size = min(1000, nobj)
-            create_dataset(g_pz, "chi2grid", Float32, (nobj, nz),
-                          chunk=(chunk_size, nz), compress=3)
+            create_dataset(g_pz, "chi2grid", Float32, (nz, nobj),
+                          chunk=(nz, chunk_size), compress=3)
             # Store normalized P(z) alongside chi2grid for consistent output
-            create_dataset(g_pz, "pz", Float32, (nobj, nz),
-                          chunk=(chunk_size, nz), compress=3)
+            create_dataset(g_pz, "pz", Float32, (nz, nobj),
+                          chunk=(nz, chunk_size), compress=3)
         end
         
         # Rest-frame absolute magnitudes
@@ -536,19 +536,19 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
             
             # Write P(z) if provided
             if chi2grid !== nothing && haskey(file, "pz/chi2grid")
-                file["pz/chi2grid"][chunk_start:chunk_end, :] = chi2grid
+                file["pz/chi2grid"][:, chunk_start:chunk_end] = chi2grid
 
                 # Compute and store normalized P(z) per-chunk
                 if zgrid !== nothing && haskey(file, "pz/pz")
                     pz_chunk = exp.(-0.5f0 .* chi2grid)
-                    # Normalize each row using trapezoidal integration
-                    for row in 1:size(pz_chunk, 1)
-                        norm = trapz(zgrid, @view pz_chunk[row, :])
+                    # Normalize each column (one per object)
+                    for col in 1:size(pz_chunk, 2)
+                        norm = trapz(zgrid, @view pz_chunk[:, col])
                         if norm > 0
-                            pz_chunk[row, :] ./= norm
+                            pz_chunk[:, col] ./= norm
                         end
                     end
-                    file["pz/pz"][chunk_start:chunk_end, :] = pz_chunk
+                    file["pz/pz"][:, chunk_start:chunk_end] = pz_chunk
                 end
             end
 
@@ -805,14 +805,19 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
         # Write P(z) if it exists
         if haskey(h5f, "pz/chi2grid")
             zgrid = read(meta, "zgrid")
-            chi2grid = read(h5f["pz/chi2grid"])
+            chi2grid = read(h5f["pz/chi2grid"])  # (nz, nobj)
 
-            # Convert chi2 to P(z)
+            # Convert chi2 to P(z) and normalize each column (object)
             pz = exp.(-0.5 * chi2grid)
-            pz = pz ./ trapz(zgrid, pz)
+            for col in 1:size(pz, 2)
+                norm = trapz(zgrid, @view pz[:, col])
+                if norm > 0
+                    pz[:, col] ./= norm
+                end
+            end
 
-            # Format for FITS
-            temp_pz = vcat(transpose(zgrid), pz)
+            # Format for FITS: (nobj+1, nz) with zgrid as first row
+            temp_pz = vcat(transpose(zgrid), transpose(pz))
             temp_IDs = vcat([-1], IDs)
 
             nz = length(zgrid)

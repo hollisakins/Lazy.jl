@@ -62,11 +62,11 @@ For each row of CDF matrix `cpz`, find the redshift at which the CDF first
 reaches `threshold` using binary search. Returns a vector of redshifts.
 """
 function cdf_quantile_redshifts(cpz::AbstractMatrix, zgrid::AbstractVector, threshold::Float64)
-    nobj = size(cpz, 1)
+    nobj = size(cpz, 2)
     result = Vector{Float64}(undef, nobj)
     @inbounds for j in 1:nobj
-        row = @view cpz[j, :]
-        idx = searchsortedfirst(row, threshold)
+        col = @view cpz[:, j]
+        idx = searchsortedfirst(col, threshold)
         idx = clamp(idx, 1, length(zgrid))
         result[j] = zgrid[idx]
     end
@@ -852,7 +852,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_zbest = zeros(chunk_nobj)
             chunk_chi2best = zeros(chunk_nobj)
             chunk_coeffsbest = zeros(chunk_nobj, ntempl)
-            chunk_chi2grid = zeros(Float32, chunk_nobj, nz)
+            chunk_chi2grid = zeros(Float32, nz, chunk_nobj)
 
             # Forced low-z result arrays
             chunk_zbest_lowz = fill(-1.0, chunk_nobj)
@@ -916,7 +916,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     chunk_zbest[j_local] = zbest_j
                     chunk_chi2best[j_local] = chi2best_j
                     chunk_coeffsbest[j_local, :] = coeffsbest_j
-                    chunk_chi2grid[j_local, :] = chi2_row_j
+                    chunk_chi2grid[:, j_local] = chi2_row_j
                     chunk_zbest_lowz[j_local] = zbest_lowz_j
                     chunk_chi2best_lowz[j_local] = chi2best_lowz_j
                     chunk_coeffsbest_lowz[j_local, :] = coeffsbest_lowz_j
@@ -925,7 +925,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             
             # Calculate P(z) statistics for this chunk (always computed)
             pz_chunk = exp.(-0.5 * chunk_chi2grid)
-            cpz_chunk = cumsum(pz_chunk, dims=2) ./ sum(pz_chunk, dims=2)
+            cpz_chunk = cumsum(pz_chunk, dims=1) ./ sum(pz_chunk, dims=1)
 
             chunk_z_l95 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.025)
             chunk_z_l68 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.160)
@@ -945,14 +945,14 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_pz_zgtrzb2 = fill(Float32(-1), chunk_nobj)
 
             for j in 1:chunk_nobj
-                total = trapz(zgrid, @view pz_chunk[j, :])
+                total = trapz(zgrid, @view pz_chunk[:, j])
                 total <= 0 && continue
 
                 # P(z > Z) for each integer Z
                 for (zi, Z) in enumerate(z_integers)
                     idx = searchsortedfirst(zgrid, Z + eps())
                     idx > length(zgrid) && continue
-                    chunk_pz_gt[j, zi] = Float32(trapz(@view(zgrid[idx:end]), @view(pz_chunk[j, idx:end])) / total)
+                    chunk_pz_gt[j, zi] = Float32(trapz(@view(zgrid[idx:end]), @view(pz_chunk[idx:end, j])) / total)
                 end
 
                 # Sz: center of the unit-width bin with the most P(z)
@@ -965,7 +965,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     ilo = searchsortedfirst(zgrid, zlo)
                     ihi = searchsortedlast(zgrid, zhi - eps())
                     ilo > ihi && continue
-                    prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_chunk[j, ilo:ihi])) / total
+                    prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_chunk[ilo:ihi, j])) / total
                     chunk_pz_bins[j, bin_idx] = Float32(prob)
                     if prob > best_prob
                         best_prob = prob
@@ -981,12 +981,12 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     ilo_cen = searchsortedfirst(zgrid, zb - dz_window)
                     ihi_cen = searchsortedlast(zgrid, zb + dz_window)
                     if ilo_cen <= ihi_cen
-                        chunk_pz_cen[j] = Float32(trapz(@view(zgrid[ilo_cen:ihi_cen]), @view(pz_chunk[j, ilo_cen:ihi_cen])) / total)
+                        chunk_pz_cen[j] = Float32(trapz(@view(zgrid[ilo_cen:ihi_cen]), @view(pz_chunk[ilo_cen:ihi_cen, j])) / total)
                     end
 
                     # Pz_zgtrzb2: P(zbest - 2 < z < zmax)
                     ilo_zb2 = searchsortedfirst(zgrid, zb - 2.0)
-                    chunk_pz_zgtrzb2[j] = Float32(trapz(@view(zgrid[ilo_zb2:end]), @view(pz_chunk[j, ilo_zb2:end])) / total)
+                    chunk_pz_zgtrzb2[j] = Float32(trapz(@view(zgrid[ilo_zb2:end]), @view(pz_chunk[ilo_zb2:end, j])) / total)
                 end
             end
 
@@ -1001,9 +1001,9 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 end
 
                 # Lowz P(z) quantiles from chi2 grid restricted to [1:iz_lowz_max]
-                lowz_chi2 = chunk_chi2grid[:, 1:iz_lowz_max]
+                lowz_chi2 = chunk_chi2grid[1:iz_lowz_max, :]
                 lowz_pz = exp.(-0.5 * lowz_chi2)
-                lowz_cpz = cumsum(lowz_pz, dims=2) ./ sum(lowz_pz, dims=2)
+                lowz_cpz = cumsum(lowz_pz, dims=1) ./ sum(lowz_pz, dims=1)
                 lowz_zgrid = zgrid[1:iz_lowz_max]
 
                 chunk_z_l95_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.025)

@@ -106,7 +106,7 @@ exp, eachrow -> eachcol, and HDF5 write patterns.
 
 **Impact**: 2-5x faster P(z) computation.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Implemented  [ ] Committed
 
 ---
 
