@@ -1050,7 +1050,7 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 for cs in 1:chunk_size:nobj
                     ce = min(cs + chunk_size - 1, nobj)
                     ids_chunk = Int64.(h5f["results/ID"][cs:ce])
-                    pz_chunk = Float32.(h5f["pz/pz"][cs:ce, :])
+                    pz_chunk = Float32.(h5f["pz/pz"][:, cs:ce])
 
                     # Write to rows cs+1:ce+1 (offset by 1 for sentinel row)
                     CFITSIO.fits_write_col(ff, 1, cs + 1, 1, ids_chunk)
