@@ -963,23 +963,40 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             # Pre-allocate normalized P(z) grid to avoid recomputing during I/O
             chunk_pz_grid = output_pz ? zeros(Float32, nz, chunk_nobj) : nothing
 
+            # Pre-compute constant dz for uniform zgrid
+            dz = zgrid[2] - zgrid[1]
+            half_dz = 0.5 * dz
+
+            # Pre-compute bin edge indices (constant for all objects, zgrid is uniform)
+            z_gt_indices = [clamp(searchsortedfirst(zgrid, Z + eps()), 1, nz) for (_, Z) in enumerate(z_integers)]
+            bin_indices = Vector{Tuple{Int,Int}}(undef, length(Sz_bc))
+            for (bin_idx, bc) in enumerate(Sz_bc)
+                zlo = bc == 0.0 ? 0.0 : bc - 0.5
+                zhi = bc == z_max_grid ? z_max_grid : bc + 0.5
+                bin_indices[bin_idx] = (searchsortedfirst(zgrid, zlo), searchsortedlast(zgrid, zhi - eps()))
+            end
+
             # Threaded P(z) computation — use task_local_storage for working arrays
             Threads.@threads for j in 1:chunk_nobj
                 pz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :pz_col)::Vector{Float64}
                 cpz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :cpz_col)::Vector{Float64}
                 cumtrapz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :cumtrapz_col)::Vector{Float64}
 
-                # Compute P(z) from chi2 column — no large array materialization
+                # Fused pass: exp + cumtrapz + CDF + pz_grid store
                 chi2_col = @view chunk_chi2grid[:, j]
-                @inbounds for i in 1:nz
-                    pz_col[i] = exp(-0.5 * Float64(chi2_col[i]))
+                store_pz = chunk_pz_grid !== nothing
+
+                @inbounds begin
+                    pz_col[1] = exp(-0.5 * Float64(chi2_col[1]))
+                    cumtrapz_col[1] = 0.0
+                    cpz_col[1] = pz_col[1]
+                    for i in 2:nz
+                        pz_col[i] = exp(-0.5 * Float64(chi2_col[i]))
+                        cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
+                        cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                    end
                 end
 
-                # Cumulative trapezoidal integral — compute once, use for all sub-range integrals
-                cumtrapz_col[1] = 0.0
-                @inbounds for i in 2:nz
-                    cumtrapz_col[i] = cumtrapz_col[i-1] + 0.5 * (zgrid[i] - zgrid[i-1]) * (pz_col[i] + pz_col[i-1])
-                end
                 total = cumtrapz_col[nz]
                 if total <= 0
                     chunk_z_l95[j] = -1.0
@@ -997,22 +1014,20 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     continue
                 end
 
-                # Store normalized P(z) for HDF5 output (avoids recomputing during I/O)
-                if chunk_pz_grid !== nothing
+                # Store normalized P(z) for HDF5 output
+                if store_pz
+                    inv_total = Float32(1.0 / total)
                     @inbounds for i in 1:nz
-                        chunk_pz_grid[i, j] = Float32(pz_col[i] / total)
+                        chunk_pz_grid[i, j] = Float32(pz_col[i]) * inv_total
                     end
                 end
 
-                # CDF via cumulative sum
-                cpz_col[1] = pz_col[1]
-                @inbounds for i in 2:nz
-                    cpz_col[i] = cpz_col[i-1] + pz_col[i]
-                end
+                # Normalize CDF
                 cpz_norm = cpz_col[nz]
                 if cpz_norm > 0
+                    inv_cpz = 1.0 / cpz_norm
                     @inbounds for i in 1:nz
-                        cpz_col[i] /= cpz_norm
+                        cpz_col[i] *= inv_cpz
                     end
                 end
 
@@ -1024,22 +1039,20 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 chunk_z_u95[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.975), 1, nz)]
 
                 # P(z > Z) for each integer Z — O(1) via cumulative integral
+                inv_total = 1.0 / total
                 for (zi, Z) in enumerate(z_integers)
-                    idx = searchsortedfirst(zgrid, Z + eps())
+                    idx = z_gt_indices[zi]
                     idx > nz && continue
-                    chunk_pz_gt[j, zi] = Float32((cumtrapz_col[nz] - cumtrapz_col[idx]) / total)
+                    chunk_pz_gt[j, zi] = Float32((cumtrapz_col[nz] - cumtrapz_col[idx]) * inv_total)
                 end
 
                 # Sz: center of the unit-width bin with the most P(z)
                 best_prob = -1.0
                 best_bc = -1.0
                 for (bin_idx, bc) in enumerate(Sz_bc)
-                    zlo = bc == 0.0 ? 0.0 : bc - 0.5
-                    zhi = bc == z_max_grid ? z_max_grid : bc + 0.5
-                    ilo = searchsortedfirst(zgrid, zlo)
-                    ihi = searchsortedlast(zgrid, zhi - eps())
+                    ilo, ihi = bin_indices[bin_idx]
                     ilo > ihi && continue
-                    prob = (cumtrapz_col[ihi] - cumtrapz_col[ilo]) / total
+                    prob = (cumtrapz_col[ihi] - cumtrapz_col[ilo]) * inv_total
                     chunk_pz_bins[j, bin_idx] = Float32(prob)
                     if prob > best_prob
                         best_prob = prob
@@ -1055,10 +1068,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     ilo_cen = searchsortedfirst(zgrid, zb - dz_window)
                     ihi_cen = searchsortedlast(zgrid, zb + dz_window)
                     if ilo_cen <= ihi_cen
-                        chunk_pz_cen[j] = Float32((cumtrapz_col[ihi_cen] - cumtrapz_col[ilo_cen]) / total)
+                        chunk_pz_cen[j] = Float32((cumtrapz_col[ihi_cen] - cumtrapz_col[ilo_cen]) * inv_total)
                     end
                     ilo_zb2 = searchsortedfirst(zgrid, zb - 2.0)
-                    chunk_pz_zgtrzb2[j] = Float32((cumtrapz_col[nz] - cumtrapz_col[ilo_zb2]) / total)
+                    chunk_pz_zgtrzb2[j] = Float32((cumtrapz_col[nz] - cumtrapz_col[ilo_zb2]) * inv_total)
                 end
 
                 # Forced low-z quantities (computed per-object from chi2grid column)
@@ -1067,11 +1080,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                         chunk_delta_chi2[j] = chunk_chi2best_lowz[j] - chunk_chi2best[j]
                     end
 
-                    # Lowz P(z) and CDF from restricted chi2 range
+                    # Lowz P(z) and CDF — reuse pz_col values already computed above
                     lowz_nz = iz_lowz_max
                     lowz_total = 0.0
                     @inbounds for i in 1:lowz_nz
-                        pz_col[i] = exp(-0.5 * Float64(chi2_col[i]))
                         lowz_total += pz_col[i]
                     end
                     if lowz_total > 0
