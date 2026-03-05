@@ -65,7 +65,15 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         # Pre-allocate working arrays to avoid repeated allocations
         templgrid_ij = Matrix{Float64}(undef, nband, ntempl)
         fnu_mod_j = Vector{Float64}(undef, nband)
+        efnu_tot_j = Vector{Float64}(undef, nband)
+        snr_j = Vector{Float64}(undef, nband)
+        valid = BitVector(undef, nband)
         chi2_row = Vector{Float32}(undef, nz)
+
+        # Pre-compute per-object constants (don't change with redshift)
+        fnu_positive = max.(fnu_j, 0.0)
+        fnu_finite = isfinite.(fnu_j)
+        snr_raw = fnu_j ./ efnu_j
 
         # Handle fixed redshift (z_spec mode)
         if z_fix_idx > 0
@@ -95,23 +103,30 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             end
             
             templgrid_i = @view templgrid[:,:,i]
-            tefz = template_error_grid[i, :]
-            
-            efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
-            
-            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
-            if sum(valid) < 2
+            tefz = @view template_error_grid[i, :]
+
+            # Compute total error and validity masks in-place
+            nvalid = 0
+            ndetect = 0
+            @inbounds for k in 1:nband
+                efnu_tot_j[k] = sqrt(efnu_j[k]^2 + (tefz[k] * fnu_positive[k])^2)
+                v = fnu_finite[k] & isfinite(efnu_tot_j[k]) & (efnu_tot_j[k] > 0.0)
+                valid[k] = v
+                nvalid += v
+                ndetect += v & (snr_raw[k] > 2.0)
+            end
+            if nvalid < 2
                 chi2_row[i] = -1
                 continue
             end
-            
-            detect = valid .& ((fnu_j ./ efnu_j) .> 2.0)
-            if sum(detect) < nphot_min
+            if ndetect < nphot_min
                 chi2_row[i] = -1
                 continue
             end
-            
-            snr_j = fnu_j ./ efnu_tot_j
+
+            @inbounds for k in 1:nband
+                snr_j[k] = fnu_j[k] / efnu_tot_j[k]
+            end
             
             # templgrid_i is (nband, ntempl), divide each row by efnu_tot_j
             for k in 1:nband
@@ -141,7 +156,13 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                     fnu_mod_j[k] += templgrid_i[k, t] * result[t]
                 end
             end
-            chi2_j = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
+            chi2_j = 0.0
+            @inbounds for k in 1:nband
+                if valid[k]
+                    residual = fnu_j[k] - fnu_mod_j[k]
+                    chi2_j += (residual / efnu_tot_j[k])^2
+                end
+            end
             
             # Additional numerical stability check for chi2
             if !isfinite(chi2_j) || chi2_j < 0
