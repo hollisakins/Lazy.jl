@@ -55,6 +55,24 @@ function distance_modulus(z::Float64, H0::Float64, Om::Float64)::Float64
     return 5.0 * log10(d_L) + 25.0
 end
 
+"""
+    cdf_quantile_redshifts(cpz, zgrid, threshold)
+
+For each row of CDF matrix `cpz`, find the redshift at which the CDF first
+reaches `threshold` using binary search. Returns a vector of redshifts.
+"""
+function cdf_quantile_redshifts(cpz::AbstractMatrix, zgrid::AbstractVector, threshold::Float64)
+    nobj = size(cpz, 1)
+    result = Vector{Float64}(undef, nobj)
+    @inbounds for j in 1:nobj
+        row = @view cpz[j, :]
+        idx = searchsortedfirst(row, threshold)
+        idx = clamp(idx, 1, length(zgrid))
+        result[j] = zgrid[idx]
+    end
+    return result
+end
+
 function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64},
                           templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
@@ -909,11 +927,11 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             pz_chunk = exp.(-0.5 * chunk_chi2grid)
             cpz_chunk = cumsum(pz_chunk, dims=2) ./ sum(pz_chunk, dims=2)
 
-            chunk_z_l95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.025)))]
-            chunk_z_l68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.160)))]
-            chunk_z_med = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.500)))]
-            chunk_z_u68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.840)))]
-            chunk_z_u95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.975)))]
+            chunk_z_l95 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.025)
+            chunk_z_l68 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.160)
+            chunk_z_med = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.500)
+            chunk_z_u68 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.840)
+            chunk_z_u95 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.975)
 
             # Integrated P(z) quantities: P(z > Z), Sz, Pz bins, Pz_cen, Pz_zgtrzb2
             z_integers = collect(1:floor(Int, maximum(zgrid)))
@@ -988,11 +1006,11 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 lowz_cpz = cumsum(lowz_pz, dims=2) ./ sum(lowz_pz, dims=2)
                 lowz_zgrid = zgrid[1:iz_lowz_max]
 
-                chunk_z_l95_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.025)))]
-                chunk_z_l68_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.160)))]
-                chunk_z_med_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.500)))]
-                chunk_z_u68_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.840)))]
-                chunk_z_u95_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.975)))]
+                chunk_z_l95_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.025)
+                chunk_z_l68_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.160)
+                chunk_z_med_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.500)
+                chunk_z_u68_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.840)
+                chunk_z_u95_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.975)
 
                 # Lowz best-fit photometry
                 chunk_photobest_lowz = zeros(chunk_nobj, nband)

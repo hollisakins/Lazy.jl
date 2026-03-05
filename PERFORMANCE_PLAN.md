@@ -79,7 +79,7 @@ pre-allocated buffers.
 
 **Impact**: 10x faster post-processing, eliminates ~40 GB temp allocations.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Implemented  [ ] Committed
 
 ---
 
