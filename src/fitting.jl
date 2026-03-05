@@ -1131,33 +1131,33 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 chunk_chi2grid = nothing
             end
 
-            # Calculate best-fit photometry for this chunk
+            # Calculate best-fit photometry and rest-frame magnitudes (threaded)
+            phot_t0 = time()
             chunk_photobest = zeros(chunk_nobj, nband)
-            for j_local in 1:chunk_nobj
-                if chunk_zbest[j_local] > 0  # Only for valid fits
-                    z_idx = nearest_sorted_index(zgrid, chunk_zbest[j_local])
-                    for k in 1:nband
-                        chunk_photobest[j_local, k] = 0.0
-                        for t in 1:ntempl
-                            chunk_photobest[j_local, k] += templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
-                        end
-                    end
-                end
-            end
-            
-            # Compute rest-frame absolute magnitudes for this chunk
             chunk_restframe_mags = nothing
             if output_restframe_mags && restframe_templgrid !== nothing
-                nrf = 4
-                chunk_restframe_mags = fill(NaN, chunk_nobj, nrf)
-                for j_local in 1:chunk_nobj
-                    chunk_zbest[j_local] <= 0 && continue
-                    z_idx = nearest_sorted_index(zgrid, chunk_zbest[j_local])
+                chunk_restframe_mags = fill(NaN, chunk_nobj, 4)
+            end
+            Threads.@threads for j_local in 1:chunk_nobj
+                chunk_zbest[j_local] <= 0 && continue
+                z_idx = nearest_sorted_index(zgrid, chunk_zbest[j_local])
+
+                # Best-fit photometry
+                for k in 1:nband
+                    val = 0.0
+                    @inbounds for t in 1:ntempl
+                        val += templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
+                    end
+                    chunk_photobest[j_local, k] = val
+                end
+
+                # Rest-frame absolute magnitudes
+                if chunk_restframe_mags !== nothing
                     DM = distance_modulus(chunk_zbest[j_local], cosmo_H0, cosmo_Om)
                     kcorr = 2.5 * log10(1.0 + chunk_zbest[j_local])
-                    for k in 1:nrf
+                    for k in 1:4
                         f_rest = 0.0
-                        for t in 1:ntempl
+                        @inbounds for t in 1:ntempl
                             f_rest += restframe_templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
                         end
                         if f_rest > 0.0
@@ -1166,6 +1166,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     end
                 end
             end
+            println("Photometry computed ($(format_time(time() - phot_t0)))")
 
             # Write chunk results to HDF5
             io_t0 = time()
