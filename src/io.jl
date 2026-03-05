@@ -18,6 +18,10 @@ const igmpath = @__DIR__() * "/igm_data/"
 const templatepath = @__DIR__() * "/templates/"
 const filterpath = @__DIR__() * "/filter_files/"
 
+# Filter caches to avoid repeated disk I/O
+const _filter_cache = Dict{String, Tuple{Vector{Float64}, Vector{Float64}}}()
+const _filter_directory_cache = Ref{Union{Nothing, Dict}}(nothing)
+
 # =============================================================================
 # Data Loading Functions (from main.jl)
 # =============================================================================
@@ -34,12 +38,15 @@ end
 
 function load_filters()
     """
-    Load the filters from the filter directory.
+    Load the filters from the filter directory (cached after first call).
     """
-    if !isdir(filterpath)
-        throw(LazyError("Filter directory $filterpath not found"))
+    if _filter_directory_cache[] === nothing
+        if !isdir(filterpath)
+            throw(LazyError("Filter directory $filterpath not found"))
+        end
+        _filter_directory_cache[] = TOML.parsefile(filterpath * "filter_directory.toml")
     end
-    return TOML.parsefile(filterpath * "filter_directory.toml")
+    return _filter_directory_cache[]
 end
 
 function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Float64}, Matrix{Float64}, Vector{String}}
@@ -94,28 +101,26 @@ end
 
 function get_filter(nickname::String)::Tuple{Vector{Float64}, Vector{Float64}}
     """
-    Get the filter transmission curve from the nickname.
-    
+    Get the filter transmission curve from the nickname (cached after first load).
+
     Returns (wavelength, transmission) vectors.
     """
+    if haskey(_filter_cache, nickname)
+        return _filter_cache[nickname]
+    end
 
     filter_directory = load_filters()
-    filter_nicknames = Dict{String, String}()
-    filter_names = sort(collect(keys(filter_directory)))
-
-    for key in filter_names
+    for key in keys(filter_directory)
         for n in filter_directory[key]["nicknames"]
-            filter_nicknames[n] = key
+            if n == nickname
+                filt = readdlm(filterpath * key)
+                result = (filt[:,1], filt[:,2])
+                _filter_cache[nickname] = result
+                return result
+            end
         end
     end
-
-    if haskey(filter_nicknames, nickname)
-        real_name = filter_nicknames[nickname]
-        filt = readdlm(filterpath * real_name)
-        return filt[:,1], filt[:,2]
-    else
-        throw(LazyError("Filter '$nickname' not found"))
-    end
+    throw(LazyError("Filter '$nickname' not found"))
 end
 
 function get_pivot_wavelengths(bands::Vector{String})::Vector{Float64}
