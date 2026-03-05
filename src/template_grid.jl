@@ -25,6 +25,27 @@ function nearest_sorted_index(arr::AbstractVector, val)
 end
 
 """
+    compute_filter_weights(fwav, ftrans)
+
+Pre-compute normalized trapezoidal quadrature weights for filter integration.
+Returns (fwav, weights) where `dot(weights, fnu_interp)` equals the standard
+`trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)`.
+"""
+function compute_filter_weights(fwav::Vector{Float64}, ftrans::Vector{Float64})
+    nu = 1.0 ./ fwav
+    n = length(nu)
+    tw = Vector{Float64}(undef, n)
+    tw[1] = (nu[2] - nu[1]) / 2
+    @inbounds for i in 2:n-1
+        tw[i] = (nu[i+1] - nu[i-1]) / 2
+    end
+    tw[n] = (nu[n] - nu[n-1]) / 2
+    w = tw .* ftrans ./ nu
+    denom = sum(w)
+    return fwav, w ./ denom
+end
+
+"""
     determine_common_wavelength_grid(templates::Vector{String})
 
 Find the common wavelength grid by selecting the template with the largest wavelength array.
@@ -161,7 +182,13 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
     
     # Initialize template grid: (nintegration, ntempl, nz) for column-major efficiency
     templgrid = zeros(nintegration, ntempl, nz)
-    
+
+    # Pre-compute filter integration weights (photometry mode only)
+    filter_data = nothing
+    if output_type == :photometry
+        filter_data = [compute_filter_weights(get_filter(band)...) for band in bands]
+    end
+
     # Load IGM model data (same for both modes)
     igm_redshifts, igm_wavelengths, igm_transmission, idx_igm, maxz = load_igm_model(igm_model_name)
     pr = Atomic{Bool}(true)  # Thread-safe print warning flag for high redshift
@@ -281,16 +308,12 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             
             # Integration step differs by mode
             if output_type == :photometry
-                # Integrate with filter transmission curves
+                # Integrate with pre-computed filter weights (dot product)
                 interp = linear_interpolation(wav_obs, templfnu_j)
                 for k in 1:nintegration
-                    band = bands[k]
-                    fwav, ftrans = get_filter(band)
-                    nu = 1 ./ fwav
-                    fnu_interp = interp(fwav)
-                    
-                    result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
-                    templgrid[k, i, j] = result
+                    fwav_k, fw_k = filter_data[k]
+                    fnu_interp = interp(fwav_k)
+                    templgrid[k, i, j] = dot(fw_k, fnu_interp)
                 end
                 
             elseif output_type == :spectral
@@ -361,7 +384,7 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
 
     # Hardcoded rest-frame filter nicknames
     rf_nicknames = ["rf_uv", "rf_u", "rf_v", "rf_j"]
-    rf_filters = [get_filter(nick) for nick in rf_nicknames]
+    rf_filter_data = [compute_filter_weights(get_filter(nick)...) for nick in rf_nicknames]
 
     restframe_templgrid = zeros(nrf, ntempl, nz)
 
@@ -389,17 +412,12 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
             end
             templfnu_j = templfnu_j ./ norm_val
 
-            # Integrate through each rest-frame filter
+            # Integrate through each rest-frame filter (dot product with pre-computed weights)
+            interp = linear_interpolation(templwav_i, templfnu_j, extrapolation_bc=Flat())
             for k in 1:nrf
-                fwav, ftrans = rf_filters[k]
-                nu = 1.0 ./ fwav
-                interp = linear_interpolation(templwav_i, templfnu_j, extrapolation_bc=Flat())
-                fnu_interp = interp(fwav)
-
-                denom = trapz(nu, ftrans ./ nu)
-                if denom != 0
-                    restframe_templgrid[k, i, j] = trapz(nu, fnu_interp .* ftrans ./ nu) / denom
-                end
+                fwav_k, fw_k = rf_filter_data[k]
+                fnu_interp = interp(fwav_k)
+                restframe_templgrid[k, i, j] = dot(fw_k, fnu_interp)
             end
         end
     end

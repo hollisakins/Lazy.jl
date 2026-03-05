@@ -119,7 +119,7 @@ filter grid then integrates. Could pre-compute filter weights for dot-product in
 
 **Impact**: 1.5-2x faster grid build.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Implemented  [ ] Committed
 
 ---
 
