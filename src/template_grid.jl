@@ -183,9 +183,13 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
         
         # Process each redshift (parallelized)
         @threads for j in 1:nz
+            # Declare thread-local variables to avoid data races with outer scope
+            local interp
+            local working_idx_local = working_idx
+
             z = zgrid[j]
             wav_obs = working_wavelength_grid .* (1 + z)
-            
+
             # Apply IGM transmission at this redshift
             if z > maxz
                 # Thread-safe test-and-set: only first thread to encounter high-z will print
@@ -200,22 +204,20 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             transmission = igm_transmission[iz_up,:]
             
             # Interpolate IGM transmission to working wavelength grid
-            # Handle edge cases for different wavelength grids
-            if working_idx > length(working_wavelength_grid)
-                # If working_idx is out of bounds (shouldn't happen), use last valid index
-                working_idx = length(working_wavelength_grid)
+            if working_idx_local > length(working_wavelength_grid)
+                working_idx_local = length(working_wavelength_grid)
             end
-            
-            if working_idx > 1
+
+            if working_idx_local > 1
                 interp = linear_interpolation([0.0; igm_wavelengths[1:idx_igm-1]], [0.0; transmission[1:idx_igm-1]], extrapolation_bc=Flat())
-                y1 = interp(working_wavelength_grid[1:working_idx-1])
+                y1 = interp(working_wavelength_grid[1:working_idx_local-1])
             else
                 y1 = Float64[]
             end
-            
-            if working_idx <= length(working_wavelength_grid)
+
+            if working_idx_local <= length(working_wavelength_grid)
                 interp = linear_interpolation([igm_wavelengths[idx_igm:end]; 1226.0], [transmission[idx_igm:end]; 1.0], extrapolation_bc=Flat())
-                y2 = interp(working_wavelength_grid[working_idx:end])
+                y2 = interp(working_wavelength_grid[working_idx_local:end])
             else
                 y2 = Float64[]
             end
@@ -268,11 +270,11 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             # Integration step differs by mode
             if output_type == :photometry
                 # Integrate with filter transmission curves
+                interp = linear_interpolation(wav_obs, templfnu_j)
                 for k in 1:nintegration
                     band = bands[k]
                     fwav, ftrans = get_filter(band)
                     nu = 1 ./ fwav
-                    interp = linear_interpolation(wav_obs, templfnu_j)
                     fnu_interp = interp(fwav)
                     
                     result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
