@@ -839,6 +839,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
     interrupted = Ref(false)
     
     try
+        h5open(work_file, "r+") do h5f
         for chunk_start in start_obj:chunk_size:nobj
             chunk_end = min(chunk_start + chunk_size - 1, nobj)
             chunk_nobj = chunk_end - chunk_start + 1
@@ -959,6 +960,9 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             chunk_z_u95_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
             chunk_photobest_lowz = output_forced_lowz ? zeros(chunk_nobj, nband) : nothing
 
+            # Pre-allocate normalized P(z) grid to avoid recomputing during I/O
+            chunk_pz_grid = output_pz ? zeros(Float32, nz, chunk_nobj) : nothing
+
             # Threaded P(z) computation — use task_local_storage for working arrays
             Threads.@threads for j in 1:chunk_nobj
                 pz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :pz_col)::Vector{Float64}
@@ -986,6 +990,13 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                         chunk_z_u95_lowz[j] = -1.0
                     end
                     continue
+                end
+
+                # Store normalized P(z) for HDF5 output (avoids recomputing during I/O)
+                if chunk_pz_grid !== nothing
+                    @inbounds for i in 1:nz
+                        chunk_pz_grid[i, j] = Float32(pz_col[i] / total)
+                    end
                 end
 
                 # CDF via cumulative sum
@@ -1157,7 +1168,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             end
 
             # Write chunk results to HDF5
-            write_chunk_results(work_file, chunk_start, chunk_end,
+            io_t0 = time()
+            write_chunk_results(h5f, chunk_start, chunk_end,
                               chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
                               chunk_photobest, bands, chunk_chi2grid, zgrid;
@@ -1165,12 +1177,16 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                               pz_bins=chunk_pz_bins, pz_bin_centers=Sz_bc,
                               pz_cen=chunk_pz_cen, pz_zgtrzb2=chunk_pz_zgtrzb2,
                               restframe_mags=chunk_restframe_mags,
-                              forced_lowz=chunk_forced_lowz)
+                              forced_lowz=chunk_forced_lowz,
+                              pz_grid=chunk_pz_grid)
+            println("I/O write completed ($(format_time(time() - io_t0)))")
             
             # Progress is now updated per-object within the threaded tasks
             objects_processed += chunk_nobj
         end
-        
+        flush(h5f)
+        end # h5open
+
         # Progress bar was already finished inside the chunk loop
         
         # Generate template output if requested (after fitting is complete)

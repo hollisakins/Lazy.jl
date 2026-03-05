@@ -373,9 +373,9 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
         g_meta["bands"] = bands
         g_meta["zgrid"] = zgrid
         g_meta["templates"] = templates
-        g_meta["last_processed_object"] = 0
-        g_meta["last_update_time"] = time()
-        g_meta["complete"] = false
+        attrs(g_meta)["last_processed_object"] = 0
+        attrs(g_meta)["last_update_time"] = time()
+        attrs(g_meta)["complete"] = false
         
         # Create results group with pre-allocated datasets
         g_results = create_group(file, "results")
@@ -422,10 +422,10 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             # Use chunking and compression for large chi2 grid
             chunk_size = min(1000, nobj)
             create_dataset(g_pz, "chi2grid", Float32, (nz, nobj),
-                          chunk=(nz, chunk_size), compress=3)
+                          chunk=(nz, chunk_size))
             # Store normalized P(z) alongside chi2grid for consistent output
             create_dataset(g_pz, "pz", Float32, (nz, nobj),
-                          chunk=(nz, chunk_size), compress=3)
+                          chunk=(nz, chunk_size))
         end
         
         # Rest-frame absolute magnitudes
@@ -480,12 +480,12 @@ function check_resume_file(filename::String)
             end
             
             meta = file["metadata"]
-            complete = read(meta, "complete")
+            complete = read_attribute(meta, "complete")
             if complete
                 return (false, 0)  # Already complete
             end
-            
-            last_obj = read(meta, "last_processed_object")
+
+            last_obj = read_attribute(meta, "last_processed_object")
             return (true, last_obj)
         end
     catch
@@ -494,9 +494,132 @@ function check_resume_file(filename::String)
 end
 
 """
-    write_chunk_results(filename, chunk_start, chunk_end, ...)
+    write_chunk_results(file::HDF5.File, chunk_start, chunk_end, ...)
 
-Write a chunk of results to the HDF5 work file.
+Write a chunk of results to an open HDF5 file handle.
+"""
+function write_chunk_results(file::HDF5.File, chunk_start::Int, chunk_end::Int,
+                           IDs::Vector{<:Integer}, zbest::Vector{Float64},
+                           chi2best::Vector{Float64}, coeffsbest::Matrix{Float64},
+                           z_l95::Vector{Float64}, z_l68::Vector{Float64},
+                           z_med::Vector{Float64}, z_u68::Vector{Float64},
+                           z_u95::Vector{Float64}, photobest::Matrix{Float64},
+                           bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing,
+                           zgrid::Union{Nothing,Vector{Float64}}=nothing;
+                           pz_gt::Union{Nothing,Matrix{Float32}}=nothing,
+                           Sz::Union{Nothing,Vector{Float64}}=nothing,
+                           z_integers::Union{Nothing,Vector{Int}}=nothing,
+                           pz_bins::Union{Nothing,Matrix{Float32}}=nothing,
+                           pz_bin_centers::Union{Nothing,Vector{Float64}}=nothing,
+                           pz_cen::Union{Nothing,Vector{Float32}}=nothing,
+                           pz_zgtrzb2::Union{Nothing,Vector{Float32}}=nothing,
+                           restframe_mags::Union{Nothing,Matrix{Float64}}=nothing,
+                           forced_lowz::Union{Nothing,Dict}=nothing,
+                           pz_grid::Union{Nothing,Matrix{Float32}}=nothing)
+
+    # Write results (convert IDs to Int32 to match dataset type)
+    file["results/ID"][chunk_start:chunk_end] = Int32.(IDs)
+    file["results/zbest"][chunk_start:chunk_end] = zbest
+    file["results/chi2best"][chunk_start:chunk_end] = chi2best
+    file["results/z_l95"][chunk_start:chunk_end] = z_l95
+    file["results/z_l68"][chunk_start:chunk_end] = z_l68
+    file["results/z_med"][chunk_start:chunk_end] = z_med
+    file["results/z_u68"][chunk_start:chunk_end] = z_u68
+    file["results/z_u95"][chunk_start:chunk_end] = z_u95
+    file["results/coeffs"][chunk_start:chunk_end, :] = coeffsbest
+
+    # Write photometry
+    for (i, band) in enumerate(bands)
+        file["photometry/$band"][chunk_start:chunk_end] = photobest[:, i]
+    end
+
+    # Write P(z) if provided
+    if chi2grid !== nothing && haskey(file, "pz/chi2grid")
+        file["pz/chi2grid"][:, chunk_start:chunk_end] = chi2grid
+
+        # Write pre-computed normalized P(z) if provided, otherwise compute it
+        if haskey(file, "pz/pz")
+            if pz_grid !== nothing
+                file["pz/pz"][:, chunk_start:chunk_end] = pz_grid
+            elseif zgrid !== nothing
+                pz_chunk = exp.(-0.5f0 .* chi2grid)
+                for col in 1:size(pz_chunk, 2)
+                    norm = trapz(zgrid, @view pz_chunk[:, col])
+                    if norm > 0
+                        pz_chunk[:, col] ./= norm
+                    end
+                end
+                file["pz/pz"][:, chunk_start:chunk_end] = pz_chunk
+            end
+        end
+    end
+
+    # Write integrated P(z) quantities
+    if pz_gt !== nothing && z_integers !== nothing
+        for (zi, Z) in enumerate(z_integers)
+            if haskey(file["results"], "pz_gt$(Z)")
+                file["results/pz_gt$(Z)"][chunk_start:chunk_end] = pz_gt[:, zi]
+            end
+        end
+    end
+    if Sz !== nothing && haskey(file["results"], "Sz")
+        file["results/Sz"][chunk_start:chunk_end] = Sz
+    end
+
+    # Write Pz bin probabilities
+    if pz_bins !== nothing && pz_bin_centers !== nothing
+        for (i, bc) in enumerate(pz_bin_centers)
+            key = "Pz$(Int(bc))"
+            if haskey(file["results"], key)
+                file["results/$key"][chunk_start:chunk_end] = pz_bins[:, i]
+            end
+        end
+    end
+    if pz_cen !== nothing && haskey(file["results"], "Pz_cen")
+        file["results/Pz_cen"][chunk_start:chunk_end] = pz_cen
+    end
+    if pz_zgtrzb2 !== nothing && haskey(file["results"], "Pz_zgtrzb2")
+        file["results/Pz_zgtrzb2"][chunk_start:chunk_end] = pz_zgtrzb2
+    end
+
+    # Write rest-frame absolute magnitudes
+    if restframe_mags !== nothing
+        for (k, mag_name) in enumerate(["M_UV", "M_U", "M_V", "M_J"])
+            if haskey(file["results"], mag_name)
+                file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
+            end
+        end
+    end
+
+    # Write forced low-z results
+    if forced_lowz !== nothing
+        if haskey(file["results"], "zbest_lowz")
+            file["results/zbest_lowz"][chunk_start:chunk_end] = forced_lowz["zbest"]
+            file["results/chi2best_lowz"][chunk_start:chunk_end] = forced_lowz["chi2best"]
+            file["results/delta_chi2"][chunk_start:chunk_end] = forced_lowz["delta_chi2"]
+            file["results/z_l95_lowz"][chunk_start:chunk_end] = forced_lowz["z_l95"]
+            file["results/z_l68_lowz"][chunk_start:chunk_end] = forced_lowz["z_l68"]
+            file["results/z_med_lowz"][chunk_start:chunk_end] = forced_lowz["z_med"]
+            file["results/z_u68_lowz"][chunk_start:chunk_end] = forced_lowz["z_u68"]
+            file["results/z_u95_lowz"][chunk_start:chunk_end] = forced_lowz["z_u95"]
+            file["results/coeffs_lowz"][chunk_start:chunk_end, :] = forced_lowz["coeffs"]
+            for (i, band) in enumerate(bands)
+                if haskey(file["photometry"], "$(band)_lowz")
+                    file["photometry/$(band)_lowz"][chunk_start:chunk_end] = forced_lowz["photobest"][:, i]
+                end
+            end
+        end
+    end
+
+    # Update metadata
+    attrs(file["metadata"])["last_processed_object"] = chunk_end
+    attrs(file["metadata"])["last_update_time"] = time()
+end
+
+"""
+    write_chunk_results(filename::String, chunk_start, chunk_end, ...)
+
+Convenience wrapper that opens the HDF5 file, writes, and flushes.
 """
 function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            IDs::Vector{<:Integer}, zbest::Vector{Float64},
@@ -514,132 +637,30 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            pz_cen::Union{Nothing,Vector{Float32}}=nothing,
                            pz_zgtrzb2::Union{Nothing,Vector{Float32}}=nothing,
                            restframe_mags::Union{Nothing,Matrix{Float64}}=nothing,
-                           forced_lowz::Union{Nothing,Dict}=nothing)
-    
+                           forced_lowz::Union{Nothing,Dict}=nothing,
+                           pz_grid::Union{Nothing,Matrix{Float32}}=nothing)
     try
         h5open(filename, "r+") do file
-            # Write results (convert IDs to Int32 to match dataset type)
-            file["results/ID"][chunk_start:chunk_end] = Int32.(IDs)
-            file["results/zbest"][chunk_start:chunk_end] = zbest
-            file["results/chi2best"][chunk_start:chunk_end] = chi2best
-            file["results/z_l95"][chunk_start:chunk_end] = z_l95
-            file["results/z_l68"][chunk_start:chunk_end] = z_l68
-            file["results/z_med"][chunk_start:chunk_end] = z_med
-            file["results/z_u68"][chunk_start:chunk_end] = z_u68
-            file["results/z_u95"][chunk_start:chunk_end] = z_u95
-            file["results/coeffs"][chunk_start:chunk_end, :] = coeffsbest
-            
-            # Write photometry
-            for (i, band) in enumerate(bands)
-                file["photometry/$band"][chunk_start:chunk_end] = photobest[:, i]
-            end
-            
-            # Write P(z) if provided
-            if chi2grid !== nothing && haskey(file, "pz/chi2grid")
-                file["pz/chi2grid"][:, chunk_start:chunk_end] = chi2grid
-
-                # Compute and store normalized P(z) per-chunk
-                if zgrid !== nothing && haskey(file, "pz/pz")
-                    pz_chunk = exp.(-0.5f0 .* chi2grid)
-                    # Normalize each column (one per object)
-                    for col in 1:size(pz_chunk, 2)
-                        norm = trapz(zgrid, @view pz_chunk[:, col])
-                        if norm > 0
-                            pz_chunk[:, col] ./= norm
-                        end
-                    end
-                    file["pz/pz"][:, chunk_start:chunk_end] = pz_chunk
-                end
-            end
-
-            # Write integrated P(z) quantities
-            if pz_gt !== nothing && z_integers !== nothing
-                for (zi, Z) in enumerate(z_integers)
-                    if haskey(file["results"], "pz_gt$(Z)")
-                        file["results/pz_gt$(Z)"][chunk_start:chunk_end] = pz_gt[:, zi]
-                    end
-                end
-            end
-            if Sz !== nothing && haskey(file["results"], "Sz")
-                file["results/Sz"][chunk_start:chunk_end] = Sz
-            end
-
-            # Write Pz bin probabilities
-            if pz_bins !== nothing && pz_bin_centers !== nothing
-                for (i, bc) in enumerate(pz_bin_centers)
-                    key = "Pz$(Int(bc))"
-                    if haskey(file["results"], key)
-                        file["results/$key"][chunk_start:chunk_end] = pz_bins[:, i]
-                    end
-                end
-            end
-            if pz_cen !== nothing && haskey(file["results"], "Pz_cen")
-                file["results/Pz_cen"][chunk_start:chunk_end] = pz_cen
-            end
-            if pz_zgtrzb2 !== nothing && haskey(file["results"], "Pz_zgtrzb2")
-                file["results/Pz_zgtrzb2"][chunk_start:chunk_end] = pz_zgtrzb2
-            end
-
-            # Write rest-frame absolute magnitudes
-            if restframe_mags !== nothing
-                for (k, mag_name) in enumerate(["M_UV", "M_U", "M_V", "M_J"])
-                    if haskey(file["results"], mag_name)
-                        file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
-                    end
-                end
-            end
-
-            # Write forced low-z results
-            if forced_lowz !== nothing
-                if haskey(file["results"], "zbest_lowz")
-                    file["results/zbest_lowz"][chunk_start:chunk_end] = forced_lowz["zbest"]
-                    file["results/chi2best_lowz"][chunk_start:chunk_end] = forced_lowz["chi2best"]
-                    file["results/delta_chi2"][chunk_start:chunk_end] = forced_lowz["delta_chi2"]
-                    file["results/z_l95_lowz"][chunk_start:chunk_end] = forced_lowz["z_l95"]
-                    file["results/z_l68_lowz"][chunk_start:chunk_end] = forced_lowz["z_l68"]
-                    file["results/z_med_lowz"][chunk_start:chunk_end] = forced_lowz["z_med"]
-                    file["results/z_u68_lowz"][chunk_start:chunk_end] = forced_lowz["z_u68"]
-                    file["results/z_u95_lowz"][chunk_start:chunk_end] = forced_lowz["z_u95"]
-                    file["results/coeffs_lowz"][chunk_start:chunk_end, :] = forced_lowz["coeffs"]
-                    for (i, band) in enumerate(bands)
-                        if haskey(file["photometry"], "$(band)_lowz")
-                            file["photometry/$(band)_lowz"][chunk_start:chunk_end] = forced_lowz["photobest"][:, i]
-                        end
-                    end
-                end
-            end
-
-            # Update metadata (handle existing vs new datasets)
-            meta_group = file["metadata"]
-            
-            # Update existing dataset
-            if haskey(meta_group, "last_processed_object")
-                delete_object(meta_group, "last_processed_object")
-            end
-            meta_group["last_processed_object"] = chunk_end
-            
-            # Create or update last_update_time
-            if haskey(meta_group, "last_update_time")
-                delete_object(meta_group, "last_update_time")
-            end
-            meta_group["last_update_time"] = time()
-            
-            # Force flush to disk
+            write_chunk_results(file, chunk_start, chunk_end,
+                              IDs, zbest, chi2best, coeffsbest,
+                              z_l95, z_l68, z_med, z_u68, z_u95,
+                              photobest, bands, chi2grid, zgrid;
+                              pz_gt=pz_gt, Sz=Sz, z_integers=z_integers,
+                              pz_bins=pz_bins, pz_bin_centers=pz_bin_centers,
+                              pz_cen=pz_cen, pz_zgtrzb2=pz_zgtrzb2,
+                              restframe_mags=restframe_mags, forced_lowz=forced_lowz,
+                              pz_grid=pz_grid)
             flush(file)
         end
     catch e
-        # Provide safe error message without printing large arrays
-        println("❌ Error writing chunk results to $filename:")
+        println("Error writing chunk results to $filename:")
         println("   Chunk: objects $chunk_start to $chunk_end")
         println("   Array sizes: IDs=$(length(IDs)), zbest=$(length(zbest))")
-        
-        # Safe error message handling
         error_msg = if hasfield(typeof(e), :msg)
             e.msg
         else
             string(e)
         end
-        
         println("   Error: $(typeof(e)) - $error_msg")
         rethrow(e)
     end
@@ -677,18 +698,8 @@ Mark HDF5 work file as complete.
 function finalize_hdf5_work_file(filename::String)
     h5open(filename, "r+") do file
         meta_group = file["metadata"]
-        
-        # Update complete status
-        if haskey(meta_group, "complete")
-            delete_object(meta_group, "complete")
-        end
-        meta_group["complete"] = true
-        
-        # Update end time
-        if haskey(meta_group, "end_time")
-            delete_object(meta_group, "end_time")
-        end
-        meta_group["end_time"] = time()
+        attrs(meta_group)["complete"] = true
+        attrs(meta_group)["end_time"] = time()
     end
 end
 
