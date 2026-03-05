@@ -66,7 +66,7 @@ pre-allocated buffers.
 
 **Impact**: 1.3-1.5x faster fitting.
 
-**Status**: [x] Implemented  [ ] Committed
+**Status**: [x] Committed
 
 ---
 
@@ -79,7 +79,7 @@ pre-allocated buffers.
 
 **Impact**: 10x faster post-processing, eliminates ~40 GB temp allocations.
 
-**Status**: [x] Implemented  [ ] Committed
+**Status**: [x] Committed
 
 ---
 
@@ -92,7 +92,7 @@ in hot loops (lines 832, 961, 992, 1009 of fitting.jl).
 
 **Impact**: 1.1x overall.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Committed
 
 ---
 
@@ -106,7 +106,7 @@ exp, eachrow -> eachcol, and HDF5 write patterns.
 
 **Impact**: 2-5x faster P(z) computation.
 
-**Status**: [x] Implemented  [ ] Committed
+**Status**: [x] Committed
 
 ---
 
@@ -119,7 +119,7 @@ filter grid then integrates. Could pre-compute filter weights for dot-product in
 
 **Impact**: 1.5-2x faster grid build.
 
-**Status**: [x] Implemented  [ ] Committed
+**Status**: [x] Committed
 
 ---
 
@@ -132,4 +132,4 @@ Halves memory bandwidth.
 
 **Impact**: 1.1-1.2x faster fitting via better cache utilization.
 
-**Status**: [x] Implemented  [ ] Committed
+**Status**: [x] Committed
