@@ -204,36 +204,43 @@ function with_spinner(operation::Function, message::String, success_emoji::Strin
         spinner_active = Ref(true)
         max_line_length = Ref(0)
         
-        # Start spinner task
-        spinner_task = Threads.@spawn begin
-            i = 1
-            while spinner_active[]
-                spinner_line = "$(SPINNER_CHARS[i]) $message..."
-                print("\r$spinner_line")
-                max_line_length[] = max(max_line_length[], length(spinner_line))
-                flush(stdout)
-                sleep(0.1)
-                i = (i % length(SPINNER_CHARS)) + 1
+        # Run operation on a spawned thread, keep spinner on main thread
+        result_ref = Ref{Any}(nothing)
+        error_ref = Ref{Any}(nothing)
+        done = Ref(false)
+
+        work_task = Threads.@spawn begin
+            try
+                result_ref[] = operation()
+            catch e
+                error_ref[] = e
+            finally
+                done[] = true
             end
         end
-        
-        try
-            result = operation()
-            spinner_active[] = false
-            wait(spinner_task)
-            # Clear the spinner line completely and print success message
-            clear_line = "\r" * " "^max_line_length[] * "\r"
-            print("$clear_line$success_emoji $message\n")
+
+        # Spinner runs on main thread — guaranteed terminal access
+        i = 1
+        while !done[]
+            spinner_line = "$(SPINNER_CHARS[i]) $message..."
+            print("\r$spinner_line")
+            max_line_length[] = max(max_line_length[], length(spinner_line))
             flush(stdout)
-            return result
-        catch e
-            spinner_active[] = false
-            wait(spinner_task)
-            # Clear the spinner line completely and print error message
-            clear_line = "\r" * " "^max_line_length[] * "\r"
+            sleep(0.1)
+            i = (i % length(SPINNER_CHARS)) + 1
+        end
+        wait(work_task)
+
+        # Clear spinner and print result
+        clear_line = "\r" * " "^max_line_length[] * "\r"
+        if error_ref[] !== nothing
             print(clear_line * "❌ $message (failed)\n")
             flush(stdout)
-            rethrow(e)
+            throw(error_ref[])
+        else
+            print("$clear_line$success_emoji $message\n")
+            flush(stdout)
+            return result_ref[]
         end
     else
         # Fallback for non-interactive terminals - only print completion message
