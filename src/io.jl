@@ -649,26 +649,22 @@ end
     write_template_data(work_file::String, templgrid_spectral, wavelength_grid, zgrid, templates)
 
 Write template spectral data to HDF5 work file.
-templgrid_spectral has shape (ntempl, nz, nwav) and is converted to (nwav, nz) per template for storage.
+templgrid_spectral has shape (nwav, ntempl, nz). Per template, slice [:, i, :] gives (nwav, nz).
 """
 function write_template_data(work_file::String, templgrid_spectral, wavelength_grid, zgrid, templates)
     h5open(work_file, "r+") do file
         g_templates = file["templates"]
-        
+
         # Store wavelength grid (common to all templates)
         g_templates["wavelength"] = wavelength_grid
-        
+
         # Store each template's spectral data
-        # templgrid_spectral[i,:,:] has shape (nz, nwav)
-        # We need to transpose to (nwav, nz) to match original format
+        # templgrid_spectral[:, i, :] has shape (nwav, nz) — already correct orientation
         for (i, template) in enumerate(templates)
             template_name = basename(template)
             template_name = splitext(template_name)[1]  # Remove extension regardless of type
-            
-            # Convert from (nz, nwav) to (nwav, nz) to match original format
-            template_data = transpose(templgrid_spectral[i, :, :])
-            # Convert transpose to regular array for HDF5 compatibility
-            g_templates[template_name] = collect(template_data)
+
+            g_templates[template_name] = templgrid_spectral[:, i, :]
         end
     end
 end
@@ -1316,6 +1312,12 @@ function load_template_cache(cache_key::String)::Union{Tuple{Array{Float64,3}, M
         h5open(filename, "r") do file
             templgrid = read(file, "templgrid")
             template_error_grid = read(file, "template_error_grid")
+            # Validate shape: expected (nband, ntempl, nz) where dim1 == nband
+            nband_cached = size(template_error_grid, 2)
+            if size(templgrid, 1) != nband_cached
+                @warn "Cached template grid has incompatible shape $(size(templgrid)), rebuilding."
+                return nothing
+            end
             return (templgrid, template_error_grid)
         end
         

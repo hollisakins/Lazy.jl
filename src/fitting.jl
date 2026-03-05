@@ -94,7 +94,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 break
             end
             
-            templgrid_i = templgrid[:,i,:]
+            templgrid_i = @view templgrid[:,:,i]
             tefz = template_error_grid[i, :]
             
             efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
@@ -113,11 +113,10 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             
             snr_j = fnu_j ./ efnu_tot_j
             
-            # Optimized: avoid transpose by using templgrid_i directly with broadcasting
-            # templgrid_i is (ntempl, nband), we need (nband, ntempl) divided by efnu_tot_j
+            # templgrid_i is (nband, ntempl), divide each row by efnu_tot_j
             for k in 1:nband
                 for t in 1:ntempl
-                    templgrid_ij[k, t] = templgrid_i[t, k] / efnu_tot_j[k]
+                    templgrid_ij[k, t] = templgrid_i[k, t] / efnu_tot_j[k]
                 end
             end
             
@@ -136,11 +135,10 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 continue
             end
             
-            # Optimized: avoid transpose by manual matrix multiplication
             fill!(fnu_mod_j, 0.0)
             for k in 1:nband
                 for t in 1:ntempl
-                    fnu_mod_j[k] += templgrid_i[t, k] * result[t]
+                    fnu_mod_j[k] += templgrid_i[k, t] * result[t]
                 end
             end
             chi2_j = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
@@ -961,7 +959,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     z_idx = argmin(abs.(zgrid .- chunk_zbest_lowz[j_local]))
                     for k in 1:nband
                         for t in 1:ntempl
-                            chunk_photobest_lowz[j_local, k] += templgrid[t, z_idx, k] * chunk_coeffsbest_lowz[j_local, t]
+                            chunk_photobest_lowz[j_local, k] += templgrid[k, t, z_idx] * chunk_coeffsbest_lowz[j_local, t]
                         end
                     end
                 end
@@ -993,7 +991,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     for k in 1:nband
                         chunk_photobest[j_local, k] = 0.0
                         for t in 1:ntempl
-                            chunk_photobest[j_local, k] += templgrid[t, z_idx, k] * chunk_coeffsbest[j_local, t]
+                            chunk_photobest[j_local, k] += templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
                         end
                     end
                 end
@@ -1012,7 +1010,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     for k in 1:nrf
                         f_rest = 0.0
                         for t in 1:ntempl
-                            f_rest += restframe_templgrid[t, z_idx, k] * chunk_coeffsbest[j_local, t]
+                            f_rest += restframe_templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
                         end
                         if f_rest > 0.0
                             chunk_restframe_mags[j_local, k] = -2.5 * log10(f_rest) + flux_zp - DM + kcorr

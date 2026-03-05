@@ -109,10 +109,11 @@ Arguments:
 - wavelength_grid: Optional for :spectral mode (auto-determined if nothing)
 
 Returns:
-For :photometry mode: (templgrid[ntempl,nz,nband], template_error_grid[nz,nband], nothing)
-For :spectral mode: (templgrid[ntempl,nz,nwav], nothing, wavelength_grid)
+For :photometry mode: (templgrid[nband,ntempl,nz], template_error_grid[nz,nband], nothing)
+For :spectral mode: (templgrid[nwav,ntempl,nz], nothing, wavelength_grid)
 
-The template grid shape is consistent (ntempl, nz, dimension3) for both modes.
+The template grid shape is (dimension3, ntempl, nz) for both modes, optimized for
+column-major access when slicing by redshift index.
 """
 function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
                            igm_model_name::String, fitting_params::Dict;
@@ -146,8 +147,8 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
         throw(LazyError("output_type must be :photometry or :spectral"))
     end
     
-    # Initialize template grid with consistent shape
-    templgrid = zeros(ntempl, nz, nintegration)
+    # Initialize template grid: (nintegration, ntempl, nz) for column-major efficiency
+    templgrid = zeros(nintegration, ntempl, nz)
     
     # Load IGM model data (same for both modes)
     igm_redshifts, igm_wavelengths, igm_transmission, idx_igm, maxz = load_igm_model(igm_model_name)
@@ -275,12 +276,12 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
                     fnu_interp = interp(fwav)
                     
                     result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
-                    templgrid[i, j, k] = result
+                    templgrid[k, i, j] = result
                 end
                 
             elseif output_type == :spectral
                 # Sample on wavelength grid (no filter integration)
-                templgrid[i, j, :] = templfnu_j
+                templgrid[:, i, j] = templfnu_j
             end
         end
         
@@ -337,7 +338,7 @@ Build rest-frame template grid integrated through 4 hardcoded rest-frame filters
 through rest-frame bandpasses. Normalization matches build_template_grid() (at
 rest-frame 10000A).
 
-Returns: restframe_templgrid[ntempl, nz, 4] where dim 3 = [M_UV, M_U, M_V, M_J]
+Returns: restframe_templgrid[4, ntempl, nz] where dim 1 = [M_UV, M_U, M_V, M_J]
 """
 function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{Float64})
     ntempl = length(templates)
@@ -348,7 +349,7 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
     rf_nicknames = ["rf_uv", "rf_u", "rf_v", "rf_j"]
     rf_filters = [get_filter(nick) for nick in rf_nicknames]
 
-    restframe_templgrid = zeros(ntempl, nz, nrf)
+    restframe_templgrid = zeros(nrf, ntempl, nz)
 
     for i in 1:ntempl
         templwav_i, templfnu_i, templz_i = load_template(templates[i])
@@ -382,8 +383,8 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
                 fnu_interp = interp(fwav)
 
                 denom = trapz(nu, ftrans ./ nu)
-                if denom > 0
-                    restframe_templgrid[i, j, k] = trapz(nu, fnu_interp .* ftrans ./ nu) / denom
+                if denom != 0
+                    restframe_templgrid[k, i, j] = trapz(nu, fnu_interp .* ftrans ./ nu) / denom
                 end
             end
         end
