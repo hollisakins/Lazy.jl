@@ -1261,7 +1261,7 @@ end
 """
 Save template grid and error grid to cache
 """
-function save_template_cache(templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+function save_template_cache(templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                             metadata::Dict, cache_key::String)
     try
         ensure_cache_dir()
@@ -1306,7 +1306,7 @@ end
 """
 Load template grid from cache if it exists
 """
-function load_template_cache(cache_key::String)::Union{Tuple{Array{Float64,3}, Matrix{Float64}}, Nothing}
+function load_template_cache(cache_key::String)::Union{Tuple{Array{Float32,3}, Matrix{Float64}}, Nothing}
     try
         filename = get_cache_filename(cache_key)
         
@@ -1315,7 +1315,7 @@ function load_template_cache(cache_key::String)::Union{Tuple{Array{Float64,3}, M
         end
         
         h5open(filename, "r") do file
-            templgrid = read(file, "templgrid")
+            templgrid = Float32.(read(file, "templgrid"))
             template_error_grid = read(file, "template_error_grid")
             # Validate shape: expected (nband, ntempl, nz) where dim1 == nband
             nband_cached = size(template_error_grid, 2)

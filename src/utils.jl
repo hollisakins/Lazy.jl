@@ -249,8 +249,8 @@ function estimate_memory_usage(nobj::Int, nz::Int, nband::Int, ntempl::Int)::Dic
     
     Returns a dictionary with estimated memory usage for different components.
     """
-    # Template grid: nband × ntempl × nz × 8 bytes (Float64)
-    templgrid_gb = (ntempl * nz * nband * 8) / (1024^3)
+    # Template grid: nband × ntempl × nz × 4 bytes (Float32)
+    templgrid_gb = (ntempl * nz * nband * 4) / (1024^3)
     
     # Chi2 grid: nobj × nz × 4 bytes (Float32)  
     chi2grid_gb = (nobj * nz * 4) / (1024^3)

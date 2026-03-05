@@ -181,7 +181,7 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
     end
     
     # Initialize template grid: (nintegration, ntempl, nz) for column-major efficiency
-    templgrid = zeros(nintegration, ntempl, nz)
+    templgrid = zeros(Float32, nintegration, ntempl, nz)
 
     # Pre-compute filter integration weights (photometry mode only)
     filter_data = nothing

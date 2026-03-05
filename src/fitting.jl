@@ -74,7 +74,7 @@ function cdf_quantile_redshifts(cpz::AbstractMatrix, zgrid::AbstractVector, thre
 end
 
 function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64},
-                          templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+                          templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
                           interrupted_flag::Union{Nothing,Ref{Bool}}=nothing,
                           z_fix_idx::Int=-1, lowz_max_idx::Int=-1)
@@ -728,7 +728,7 @@ function fit(param)
 end
 
 """
-    fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+    fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                   zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
                   nobj::Int, nz::Int, nband::Int, ntempl::Int,
                   fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
@@ -741,7 +741,7 @@ When chunked_processing=false, uses single chunk (in-memory mode).
 When chunked_processing=true, uses memory-controlled chunking.
 output_format controls final output: "fits", "hdf5", or "both".
 """
-function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                       zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
                       nobj::Int, nz::Int, nband::Int, ntempl::Int,
                       fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},

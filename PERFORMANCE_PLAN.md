@@ -132,4 +132,4 @@ Halves memory bandwidth.
 
 **Impact**: 1.1-1.2x faster fitting via better cache utilization.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Implemented  [ ] Committed
