@@ -13,6 +13,18 @@ using DelimitedFiles
 using Trapz
 
 """
+    nearest_sorted_index(arr, val)
+
+Binary search for the index of the nearest value in a sorted array. O(log n), zero alloc.
+"""
+function nearest_sorted_index(arr::AbstractVector, val)
+    i = searchsortedfirst(arr, val)
+    i > length(arr) && return length(arr)
+    i == 1 && return 1
+    return abs(arr[i] - val) <= abs(arr[i-1] - val) ? i : i - 1
+end
+
+"""
     determine_common_wavelength_grid(templates::Vector{String})
 
 Find the common wavelength grid by selecting the template with the largest wavelength array.
@@ -180,7 +192,14 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             working_wavelength_grid = templwav_i
             working_idx = idx
         end
-        
+
+        # Pre-compute normalization index (constant for this template)
+        if output_type == :spectral
+            windex = nearest_sorted_index(wavelength_grid, 1e4)
+        else
+            windex = nearest_sorted_index(templwav_i, 1e4)
+        end
+
         # Process each redshift (parallelized)
         @threads for j in 1:nz
             # Declare thread-local variables to avoid data races with outer scope
@@ -246,7 +265,7 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
                 templfnu_j = templfnu_i .* transmission_interp
             else
                 # Redshift-dependent template
-                zindex = argmin(abs.(templz_i .- z))
+                zindex = nearest_sorted_index(templz_i, z)
                 if output_type == :spectral
                     # For spectral mode, interpolate template to common wavelength grid
                     interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
@@ -258,13 +277,6 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             end
             
             # Normalize template to rest-1micron (numerical stability)
-            if output_type == :spectral
-                # For spectral mode, normalize based on wavelength_grid
-                windex = argmin(abs.(wavelength_grid .- 1e4))
-            else
-                # For photometry mode, normalize based on template wavelength
-                windex = argmin(abs.(templwav_i .- 1e4))
-            end
             templfnu_j /= templfnu_j[windex]
             
             # Integration step differs by mode
@@ -357,7 +369,7 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
         templwav_i, templfnu_i, templz_i = load_template(templates[i])
 
         # Normalization index at rest-frame 10000A (same as build_template_grid line 263)
-        windex = argmin(abs.(templwav_i .- 1e4))
+        windex = nearest_sorted_index(templwav_i, 1e4)
 
         @threads for j in 1:nz
             z = zgrid[j]
@@ -366,7 +378,7 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
             if templz_i === nothing
                 templfnu_j = copy(templfnu_i)
             else
-                zindex = argmin(abs.(templz_i .- z))
+                zindex = nearest_sorted_index(templz_i, z)
                 templfnu_j = templfnu_i[:, zindex]
             end
 

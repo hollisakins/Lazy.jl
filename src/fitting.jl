@@ -710,8 +710,8 @@ function fit(param)
     if output_restframe_mags
         restframe_templgrid = with_spinner(
             () -> build_restframe_template_grid(templates, zgrid),
-            "Building rest-frame template grid", "📊")
-        println("✅ Rest-frame template grid built: " * summary(restframe_templgrid))
+            "Building rest-frame magnitude grid", "📊")
+        println("✅ Rest-frame magnitude grid built: " * summary(restframe_templgrid))
     end
 
     # Always use fit_streaming() - it handles both chunked and in-memory modes
@@ -887,7 +887,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                         # Compute fixed redshift index if z_spec available
                         z_fix_idx_j = -1
                         if use_zspec && isfinite(zspec[j_global])
-                            z_fix_idx_j = argmin(abs.(zgrid .- zspec[j_global]))
+                            z_fix_idx_j = nearest_sorted_index(zgrid, zspec[j_global])
                         end
 
                         zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
@@ -1016,7 +1016,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 chunk_photobest_lowz = zeros(chunk_nobj, nband)
                 for j_local in 1:chunk_nobj
                     chunk_zbest_lowz[j_local] <= 0 && continue
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest_lowz[j_local]))
+                    z_idx = nearest_sorted_index(zgrid, chunk_zbest_lowz[j_local])
                     for k in 1:nband
                         for t in 1:ntempl
                             chunk_photobest_lowz[j_local, k] += templgrid[k, t, z_idx] * chunk_coeffsbest_lowz[j_local, t]
@@ -1047,7 +1047,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_photobest = zeros(chunk_nobj, nband)
             for j_local in 1:chunk_nobj
                 if chunk_zbest[j_local] > 0  # Only for valid fits
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest[j_local]))
+                    z_idx = nearest_sorted_index(zgrid, chunk_zbest[j_local])
                     for k in 1:nband
                         chunk_photobest[j_local, k] = 0.0
                         for t in 1:ntempl
@@ -1064,7 +1064,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 chunk_restframe_mags = fill(NaN, chunk_nobj, nrf)
                 for j_local in 1:chunk_nobj
                     chunk_zbest[j_local] <= 0 && continue
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest[j_local]))
+                    z_idx = nearest_sorted_index(zgrid, chunk_zbest[j_local])
                     DM = distance_modulus(chunk_zbest[j_local], cosmo_H0, cosmo_Om)
                     kcorr = 2.5 * log10(1.0 + chunk_zbest[j_local])
                     for k in 1:nrf
