@@ -50,13 +50,7 @@ function load_filters()
 end
 
 function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Float64}, Matrix{Float64}, Vector{String}}
-    """
-    Load the photometric data from the catalog.
-    
-    Returns (fnu, efnu, bands) where fnu and efnu are nobj×nband matrices.
-    """
-    IDs = read(cat[2], "ID")
-    nobj = length(IDs)
+    nobj = length(read(cat[2], "ID"))
 
     # Downselect to bands that are present in the catalog
     all_cols = FITSIO.colnames(cat[2])
@@ -70,12 +64,8 @@ function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Fl
     fnu = zeros(nobj, nband)
     efnu = zeros(nobj, nband)
     for (i, band) in enumerate(bands)
-        flux_col = translate[band]["flux"]
-        err_col = translate[band]["error"]
-        fnu_i = read(cat[2], flux_col)
-        efnu_i = read(cat[2], err_col)
-        fnu[:, i] = fnu_i
-        efnu[:, i] = efnu_i
+        fnu[:, i] = read(cat[2], translate[band]["flux"])
+        efnu[:, i] = read(cat[2], translate[band]["error"])
     end
     return fnu, efnu, bands
 end

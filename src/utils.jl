@@ -205,7 +205,7 @@ function with_spinner(operation::Function, message::String, success_emoji::Strin
         max_line_length = Ref(0)
         
         # Start spinner task
-        spinner_task = @async begin
+        spinner_task = Threads.@spawn begin
             i = 1
             while spinner_active[]
                 spinner_line = "$(SPINNER_CHARS[i]) $message..."
