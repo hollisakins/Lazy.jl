@@ -73,7 +73,7 @@ function cdf_quantile_redshifts(cpz::AbstractMatrix, zgrid::AbstractVector, thre
     return result
 end
 
-function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64},
+function fit_single_object(j::Int, fnu_j::AbstractVector{Float64}, efnu_j::AbstractVector{Float64},
                           templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
                           interrupted_flag::Union{Nothing,Ref{Bool}}=nothing,
@@ -173,7 +173,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             A_view = @view A_valid[1:nv, :]
             b_view = @view b_valid[1:nv]
             load!(nnls_work, A_view, b_view)
-            nnls!(nnls_work)
+            nnls!(nnls_work, 10 * ntempl)
             result = nnls_work.x
             
             # Numerical stability checks
@@ -183,7 +183,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 continue
             end
             
-            if all(result .≈ 0.0)
+            if all(x -> x ≈ 0.0, result)
                 #@warn "⚠️ All-zero coefficients detected for object $j at z=$(zgrid[i]). Poor template fit."
                 chi2_row[i] = 1e10  # High chi2 to mark as poor fit
                 continue
@@ -217,14 +217,14 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             if chi2_j < best_chi2
                 best_chi2 = chi2_j
                 best_z_idx = i
-                best_coeffs = copy(result)
+                copyto!(best_coeffs, result)
             end
 
             # Update low-z best fit if within restricted range
             if lowz_max_idx > 0 && i <= lowz_max_idx && chi2_j < lowz_best_chi2
                 lowz_best_chi2 = chi2_j
                 lowz_best_z_idx = i
-                lowz_best_coeffs = copy(result)
+                copyto!(lowz_best_coeffs, result)
             end
         end
     
@@ -892,7 +892,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
 
                         zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
                             zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j = fit_single_object(
-                            j_global, chunk_fnu[j_local,:], chunk_efnu[j_local,:],
+                            j_global, @view(chunk_fnu[j_local,:]), @view(chunk_efnu[j_local,:]),
                             templgrid, template_error_grid, zgrid, nphot_min,
                             nband, ntempl, nz;
                             interrupted_flag=interrupted, z_fix_idx=z_fix_idx_j,
@@ -923,40 +923,98 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 end
             end
             
-            # Calculate P(z) statistics for this chunk (always computed)
-            pz_chunk = exp.(-0.5 * chunk_chi2grid)
-            cpz_chunk = cumsum(pz_chunk, dims=1) ./ sum(pz_chunk, dims=1)
+            # Finish fitting progress bar for this chunk's objects
+            update!(progress_bar, min(objects_processed + chunk_nobj, total_remaining), force=true)
+            if chunk_end >= nobj || interrupted[]
+                finish!(progress_bar, final_message= interrupted[] ? "interrupted" : "")
+            end
 
-            chunk_z_l95 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.025)
-            chunk_z_l68 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.160)
-            chunk_z_med = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.500)
-            chunk_z_u68 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.840)
-            chunk_z_u95 = cdf_quantile_redshifts(cpz_chunk, zgrid, 0.975)
-
-            # Integrated P(z) quantities: P(z > Z), Sz, Pz bins, Pz_cen, Pz_zgtrzb2
+            # Calculate P(z) statistics for this chunk using per-object loop
+            # to avoid materializing giant (nz, nobj) temporary arrays.
+            pz_t0 = time()
             z_integers = collect(1:floor(Int, maximum(zgrid)))
-            chunk_pz_gt = fill(Float32(-1), chunk_nobj, length(z_integers))
             z_max_grid = maximum(zgrid)
             Sz_bc = collect(0.0:1.0:z_max_grid)
             n_bins = length(Sz_bc)
+            lowz_zgrid = output_forced_lowz ? zgrid[1:iz_lowz_max] : Float64[]
+
+            chunk_z_l95 = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_l68 = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_med = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_u68 = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_u95 = Vector{Float64}(undef, chunk_nobj)
+            chunk_pz_gt = fill(Float32(-1), chunk_nobj, length(z_integers))
             chunk_Sz = fill(-1.0, chunk_nobj)
             chunk_pz_bins = fill(Float32(-1), chunk_nobj, n_bins)
             chunk_pz_cen = fill(Float32(-1), chunk_nobj)
             chunk_pz_zgtrzb2 = fill(Float32(-1), chunk_nobj)
 
-            for j in 1:chunk_nobj
-                total = trapz(zgrid, @view pz_chunk[:, j])
-                total <= 0 && continue
+            # Forced low-z arrays
+            chunk_forced_lowz = nothing
+            chunk_delta_chi2 = output_forced_lowz ? fill(NaN, chunk_nobj) : nothing
+            chunk_z_l95_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_l68_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_med_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_u68_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_u95_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_photobest_lowz = output_forced_lowz ? zeros(chunk_nobj, nband) : nothing
+
+            # Threaded P(z) computation — use task_local_storage for working arrays
+            Threads.@threads for j in 1:chunk_nobj
+                pz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :pz_col)::Vector{Float64}
+                cpz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :cpz_col)::Vector{Float64}
+
+                # Compute P(z) from chi2 column — no large array materialization
+                chi2_col = @view chunk_chi2grid[:, j]
+                @inbounds for i in 1:nz
+                    pz_col[i] = exp(-0.5 * Float64(chi2_col[i]))
+                end
+
+                # Normalize and compute CDF
+                total = trapz(zgrid, pz_col)
+                if total <= 0
+                    chunk_z_l95[j] = -1.0
+                    chunk_z_l68[j] = -1.0
+                    chunk_z_med[j] = -1.0
+                    chunk_z_u68[j] = -1.0
+                    chunk_z_u95[j] = -1.0
+                    if output_forced_lowz
+                        chunk_z_l95_lowz[j] = -1.0
+                        chunk_z_l68_lowz[j] = -1.0
+                        chunk_z_med_lowz[j] = -1.0
+                        chunk_z_u68_lowz[j] = -1.0
+                        chunk_z_u95_lowz[j] = -1.0
+                    end
+                    continue
+                end
+
+                # CDF via cumulative sum
+                cpz_col[1] = pz_col[1]
+                @inbounds for i in 2:nz
+                    cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                end
+                cpz_norm = cpz_col[nz]
+                if cpz_norm > 0
+                    @inbounds for i in 1:nz
+                        cpz_col[i] /= cpz_norm
+                    end
+                end
+
+                # Quantiles via binary search on CDF
+                chunk_z_l95[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.025), 1, nz)]
+                chunk_z_l68[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.160), 1, nz)]
+                chunk_z_med[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.500), 1, nz)]
+                chunk_z_u68[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.840), 1, nz)]
+                chunk_z_u95[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.975), 1, nz)]
 
                 # P(z > Z) for each integer Z
                 for (zi, Z) in enumerate(z_integers)
                     idx = searchsortedfirst(zgrid, Z + eps())
-                    idx > length(zgrid) && continue
-                    chunk_pz_gt[j, zi] = Float32(trapz(@view(zgrid[idx:end]), @view(pz_chunk[idx:end, j])) / total)
+                    idx > nz && continue
+                    chunk_pz_gt[j, zi] = Float32(trapz(@view(zgrid[idx:end]), @view(pz_col[idx:end])) / total)
                 end
 
                 # Sz: center of the unit-width bin with the most P(z)
-                # Also store per-bin integrated probabilities
                 best_prob = -1.0
                 best_bc = -1.0
                 for (bin_idx, bc) in enumerate(Sz_bc)
@@ -965,7 +1023,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     ilo = searchsortedfirst(zgrid, zlo)
                     ihi = searchsortedlast(zgrid, zhi - eps())
                     ilo > ihi && continue
-                    prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_chunk[ilo:ihi, j])) / total
+                    prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_col[ilo:ihi])) / total
                     chunk_pz_bins[j, bin_idx] = Float32(prob)
                     if prob > best_prob
                         best_prob = prob
@@ -974,56 +1032,75 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 end
                 chunk_Sz[j] = best_bc
 
-                # Pz_cen: P(|z - zbest| < 0.15*(1+zbest))
+                # Pz_cen and Pz_zgtrzb2
                 zb = chunk_zbest[j]
                 if zb > 0
                     dz_window = 0.15 * (1.0 + zb)
                     ilo_cen = searchsortedfirst(zgrid, zb - dz_window)
                     ihi_cen = searchsortedlast(zgrid, zb + dz_window)
                     if ilo_cen <= ihi_cen
-                        chunk_pz_cen[j] = Float32(trapz(@view(zgrid[ilo_cen:ihi_cen]), @view(pz_chunk[ilo_cen:ihi_cen, j])) / total)
+                        chunk_pz_cen[j] = Float32(trapz(@view(zgrid[ilo_cen:ihi_cen]), @view(pz_col[ilo_cen:ihi_cen])) / total)
                     end
-
-                    # Pz_zgtrzb2: P(zbest - 2 < z < zmax)
                     ilo_zb2 = searchsortedfirst(zgrid, zb - 2.0)
-                    chunk_pz_zgtrzb2[j] = Float32(trapz(@view(zgrid[ilo_zb2:end]), @view(pz_chunk[ilo_zb2:end, j])) / total)
+                    chunk_pz_zgtrzb2[j] = Float32(trapz(@view(zgrid[ilo_zb2:end]), @view(pz_col[ilo_zb2:end])) / total)
                 end
-            end
 
-            # Compute forced low-z derived quantities (needs chi2grid, so must come before nulling)
-            chunk_forced_lowz = nothing
-            if output_forced_lowz
-                chunk_delta_chi2 = fill(NaN, chunk_nobj)
-                for j in 1:chunk_nobj
+                # Forced low-z quantities (computed per-object from chi2grid column)
+                if output_forced_lowz
                     if chunk_chi2best[j] > 0 && chunk_chi2best_lowz[j] > 0
                         chunk_delta_chi2[j] = chunk_chi2best_lowz[j] - chunk_chi2best[j]
                     end
-                end
 
-                # Lowz P(z) quantiles from chi2 grid restricted to [1:iz_lowz_max]
-                lowz_chi2 = chunk_chi2grid[1:iz_lowz_max, :]
-                lowz_pz = exp.(-0.5 * lowz_chi2)
-                lowz_cpz = cumsum(lowz_pz, dims=1) ./ sum(lowz_pz, dims=1)
-                lowz_zgrid = zgrid[1:iz_lowz_max]
+                    # Lowz P(z) and CDF from restricted chi2 range
+                    lowz_nz = iz_lowz_max
+                    lowz_total = 0.0
+                    @inbounds for i in 1:lowz_nz
+                        pz_col[i] = exp(-0.5 * Float64(chi2_col[i]))
+                        lowz_total += pz_col[i]
+                    end
+                    if lowz_total > 0
+                        cpz_col[1] = pz_col[1]
+                        @inbounds for i in 2:lowz_nz
+                            cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                        end
+                        lowz_cpz_norm = cpz_col[lowz_nz]
+                        if lowz_cpz_norm > 0
+                            @inbounds for i in 1:lowz_nz
+                                cpz_col[i] /= lowz_cpz_norm
+                            end
+                        end
+                        lowz_cpz_view = @view cpz_col[1:lowz_nz]
+                        chunk_z_l95_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.025), 1, lowz_nz)]
+                        chunk_z_l68_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.160), 1, lowz_nz)]
+                        chunk_z_med_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.500), 1, lowz_nz)]
+                        chunk_z_u68_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.840), 1, lowz_nz)]
+                        chunk_z_u95_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.975), 1, lowz_nz)]
+                    else
+                        chunk_z_l95_lowz[j] = -1.0
+                        chunk_z_l68_lowz[j] = -1.0
+                        chunk_z_med_lowz[j] = -1.0
+                        chunk_z_u68_lowz[j] = -1.0
+                        chunk_z_u95_lowz[j] = -1.0
+                    end
 
-                chunk_z_l95_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.025)
-                chunk_z_l68_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.160)
-                chunk_z_med_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.500)
-                chunk_z_u68_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.840)
-                chunk_z_u95_lowz = cdf_quantile_redshifts(lowz_cpz, lowz_zgrid, 0.975)
-
-                # Lowz best-fit photometry
-                chunk_photobest_lowz = zeros(chunk_nobj, nband)
-                for j_local in 1:chunk_nobj
-                    chunk_zbest_lowz[j_local] <= 0 && continue
-                    z_idx = nearest_sorted_index(zgrid, chunk_zbest_lowz[j_local])
-                    for k in 1:nband
-                        for t in 1:ntempl
-                            chunk_photobest_lowz[j_local, k] += templgrid[k, t, z_idx] * chunk_coeffsbest_lowz[j_local, t]
+                    # Lowz best-fit photometry
+                    if chunk_zbest_lowz[j] > 0
+                        z_idx = nearest_sorted_index(zgrid, chunk_zbest_lowz[j])
+                        for k in 1:nband
+                            val = 0.0
+                            for t in 1:ntempl
+                                val += templgrid[k, t, z_idx] * chunk_coeffsbest_lowz[j, t]
+                            end
+                            chunk_photobest_lowz[j, k] = val
                         end
                     end
                 end
+            end
 
+            println("P(z) statistics computed ($(format_time(time() - pz_t0)))")
+
+            # Build forced low-z result dict
+            if output_forced_lowz
                 chunk_forced_lowz = Dict(
                     "zbest" => chunk_zbest_lowz,
                     "chi2best" => chunk_chi2best_lowz,
@@ -1094,12 +1171,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             objects_processed += chunk_nobj
         end
         
-        # Finish progress bar immediately after fitting loop completes
-        if interrupted[]
-            finish!(progress_bar, final_message="interrupted")
-        else
-            finish!(progress_bar)
-        end
+        # Progress bar was already finished inside the chunk loop
         
         # Generate template output if requested (after fitting is complete)
         if output_templ

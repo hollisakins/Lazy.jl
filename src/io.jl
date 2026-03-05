@@ -1050,11 +1050,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 for cs in 1:chunk_size:nobj
                     ce = min(cs + chunk_size - 1, nobj)
                     ids_chunk = Int64.(h5f["results/ID"][cs:ce])
-                    pz_chunk = Float32.(h5f["pz/pz"][:, cs:ce])
+                    pz_chunk = Float32.(h5f["pz/pz"][:, cs:ce])  # (nz, chunk_nobj)
 
                     # Write to rows cs+1:ce+1 (offset by 1 for sentinel row)
                     CFITSIO.fits_write_col(ff, 1, cs + 1, 1, ids_chunk)
-                    CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(permutedims(pz_chunk)))
+                    CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(pz_chunk))
                 end
             end
 
@@ -1226,6 +1226,11 @@ function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64},
     template_names = sort([basename(t) for t in templates])
     sorted_bands = sort(bands)
 
+    # Include a code version fingerprint so cache is invalidated when
+    # template_grid.jl or io.jl change (prevents loading stale grids)
+    code_files = [joinpath(@__DIR__, "template_grid.jl"), joinpath(@__DIR__, "io.jl")]
+    code_fingerprint = string(sum(stat(f).mtime for f in code_files if isfile(f)))
+
     # Create a string representation of all parameters
     params_str = join([
         join(template_names, ","),
@@ -1235,7 +1240,8 @@ function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64},
         template_error,
         string(template_error_scale),
         string(add_cgm),
-        string(cgm_A), string(cgm_a), string(cgm_c)
+        string(cgm_A), string(cgm_a), string(cgm_c),
+        code_fingerprint
     ], "_")
     
     # Generate hash and take first 8 characters for readability
