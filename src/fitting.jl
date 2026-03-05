@@ -8,6 +8,7 @@ and template error precomputation.
 using TOML
 using FITSIO
 using NonNegLeastSquares
+using NonNegLeastSquares.NNLS: NNLSWorkspace, load!, nnls!
 using LinearAlgebra
 using Base.Threads
 using Trapz
@@ -69,6 +70,11 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         snr_j = Vector{Float64}(undef, nband)
         valid = BitVector(undef, nband)
         chi2_row = Vector{Float32}(undef, nz)
+
+        # NNLS workspace and valid-only buffers (nband is max possible nvalid)
+        nnls_work = NNLSWorkspace{Float64, Int}(nband, ntempl)
+        A_valid = Matrix{Float64}(undef, nband, ntempl)
+        b_valid = Vector{Float64}(undef, nband)
 
         # Pre-compute per-object constants (don't change with redshift)
         fnu_positive = max.(fnu_j, 0.0)
@@ -135,7 +141,22 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 end
             end
             
-            result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
+            # Copy valid rows into pre-allocated buffers
+            nv = 0
+            @inbounds for k in 1:nband
+                if valid[k]
+                    nv += 1
+                    b_valid[nv] = snr_j[k]
+                    for t in 1:ntempl
+                        A_valid[nv, t] = templgrid_ij[k, t]
+                    end
+                end
+            end
+            A_view = @view A_valid[1:nv, :]
+            b_view = @view b_valid[1:nv]
+            load!(nnls_work, A_view, b_view)
+            nnls!(nnls_work)
+            result = nnls_work.x
             
             # Numerical stability checks
             if !all(isfinite, result)
@@ -178,7 +199,7 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             if chi2_j < best_chi2
                 best_chi2 = chi2_j
                 best_z_idx = i
-                best_coeffs = result
+                best_coeffs = copy(result)
             end
 
             # Update low-z best fit if within restricted range

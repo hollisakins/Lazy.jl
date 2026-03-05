@@ -11,7 +11,7 @@ filter files from disk on every call. Called ~520K times during template grid bu
 
 **Impact**: 10-100x faster template grid build.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Committed (5786ee2)
 
 ---
 
@@ -25,7 +25,7 @@ already in the right orientation for NNLS. Update all code that reads/writes tem
 
 **Impact**: 2-3x faster fitting loop. Eliminates 2B allocations + transpose ops.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Committed (c20aaa3)
 
 ---
 
@@ -38,7 +38,7 @@ already in the right orientation for NNLS. Update all code that reads/writes tem
 
 **Impact**: 5-20x fewer interpolation constructions during grid build.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Committed (363b3d0)
 
 ---
 
@@ -52,7 +52,7 @@ ops. Pre-compute `isfinite.(fnu_j)` once per object.
 
 **Impact**: 1.5-2x faster fitting.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Committed (c7c0715)
 
 ---
 
@@ -66,7 +66,7 @@ pre-allocated buffers.
 
 **Impact**: 1.3-1.5x faster fitting.
 
-**Status**: [ ] Planned  [ ] Implemented  [ ] Committed
+**Status**: [x] Implemented  [ ] Committed
 
 ---
 
