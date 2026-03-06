@@ -416,6 +416,11 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             # Store normalized P(z) alongside chi2grid for consistent output
             create_dataset(g_pz, "pz", Float32, (nz, nobj),
                           chunk=(nz, chunk_size))
+            # Store lowz-normalized P(z) when forced low-z is enabled
+            if output_forced_lowz
+                create_dataset(g_pz, "pz_lowz", Float32, (nz, nobj),
+                              chunk=(nz, chunk_size))
+            end
         end
         
         # Rest-frame absolute magnitudes
@@ -579,6 +584,11 @@ function write_chunk_results(file::HDF5.File, chunk_start::Int, chunk_end::Int,
                 file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
             end
         end
+    end
+
+    # Write forced low-z P(z) grid
+    if forced_lowz !== nothing && forced_lowz["pz_grid"] !== nothing && haskey(file, "pz/pz_lowz")
+        file["pz/pz_lowz"][:, chunk_start:chunk_end] = forced_lowz["pz_grid"]
     end
 
     # Write forced low-z results
@@ -826,6 +836,13 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
             data_pz["ID"] = Dict("format" => "K", "data" => temp_IDs)
             data_pz["Pz"] = Dict("format" => "$(nz)E", "data" => temp_pz)
 
+            # Add lowz P(z) if available
+            if haskey(h5f, "pz/pz_lowz")
+                pz_lowz = read(h5f["pz/pz_lowz"])  # (nz, nobj)
+                temp_pz_lowz = vcat(transpose(zgrid), transpose(pz_lowz))
+                data_pz["Pz_lowz"] = Dict("format" => "$(nz)E", "data" => temp_pz_lowz)
+            end
+
             write_data(fits_file, data_pz, "PZ")
         end
 
@@ -1036,16 +1053,23 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
             if haskey(h5f, "pz/pz")
                 zgrid = read(meta, "zgrid")
                 nz = length(zgrid)
+                has_pz_lowz = haskey(h5f, "pz/pz_lowz")
 
                 pz_coldefs = NTuple{3,String}[
                     ("ID", "1K", ""),
                     ("Pz", "$(nz)E", ""),
                 ]
+                if has_pz_lowz
+                    push!(pz_coldefs, ("Pz_lowz", "$(nz)E", ""))
+                end
                 CFITSIO.fits_create_binary_tbl(ff, nobj + 1, pz_coldefs, "PZ")
 
                 # Row 1: sentinel row with ID=-1 and Pz=zgrid
                 CFITSIO.fits_write_col(ff, 1, 1, 1, Int64[-1])
                 CFITSIO.fits_write_col(ff, 2, 1, 1, Float32.(zgrid))
+                if has_pz_lowz
+                    CFITSIO.fits_write_col(ff, 3, 1, 1, Float32.(zgrid))
+                end
 
                 # Remaining rows: chunked from pre-computed pz dataset
                 for cs in 1:chunk_size:nobj
@@ -1056,6 +1080,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                     # Write to rows cs+1:ce+1 (offset by 1 for sentinel row)
                     CFITSIO.fits_write_col(ff, 1, cs + 1, 1, ids_chunk)
                     CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(pz_chunk))
+
+                    if has_pz_lowz
+                        pz_lowz_chunk = Float32.(h5f["pz/pz_lowz"][:, cs:ce])
+                        CFITSIO.fits_write_col(ff, 3, cs + 1, 1, vec(pz_lowz_chunk))
+                    end
                 end
             end
 

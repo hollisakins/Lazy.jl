@@ -956,6 +956,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
 
             # Pre-allocate normalized P(z) grid to avoid recomputing during I/O
             chunk_pz_grid = output_pz ? zeros(Float32, nz, chunk_nobj) : nothing
+            chunk_pz_grid_lowz = (output_pz && output_forced_lowz) ? zeros(Float32, nz, chunk_nobj) : nothing
 
             # Pre-compute constant dz for uniform zgrid
             dz = zgrid[2] - zgrid[1]
@@ -1114,6 +1115,17 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                         chunk_z_u95_lowz[j] = -1.0
                     end
 
+                    # Lowz P(z) grid (normalized over lowz range only)
+                    if chunk_pz_grid_lowz !== nothing
+                        lowz_trapz_total = cumtrapz_col[iz_lowz_max]
+                        if lowz_trapz_total > 0
+                            inv_lowz_trapz = Float32(1.0 / lowz_trapz_total)
+                            @inbounds for i in 1:lowz_nz
+                                chunk_pz_grid_lowz[i, j] = Float32(pz_col[i]) * inv_lowz_trapz
+                            end
+                        end
+                    end
+
                     # Lowz best-fit photometry
                     if chunk_zbest_lowz[j] > 0
                         z_idx = nearest_sorted_index(zgrid, chunk_zbest_lowz[j])
@@ -1140,6 +1152,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     "z_u95" => chunk_z_u95_lowz,
                     "coeffs" => chunk_coeffsbest_lowz,
                     "photobest" => chunk_photobest_lowz,
+                    "pz_grid" => chunk_pz_grid_lowz,
                 )
             end
 

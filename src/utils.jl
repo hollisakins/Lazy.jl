@@ -295,6 +295,7 @@ function estimate_peak_memory(nobj::Int, nz::Int, nband::Int, ntempl::Int, chunk
     pz_grid_bytes = output_pz ? nz * C * 4 : 0  # Float32, same size as chi2grid
 
     # Forced low-z P(z) arrays
+    lowz_pz_grid_bytes = (output_pz && output_forced_lowz) ? nz * C * 4 : 0  # pz_grid_lowz Float32
     lowz_pz_bytes = output_forced_lowz ? C * (8 * 6 + nband * 8) : 0  # quantiles + delta_chi2 + photobest_lowz
 
     # Best-fit photometry
@@ -303,7 +304,7 @@ function estimate_peak_memory(nobj::Int, nz::Int, nband::Int, ntempl::Int, chunk
 
     chunk_bytes = chi2grid_bytes + fitting_scalars_bytes + coeffs_bytes + lowz_scalars_bytes +
                   pz_quantiles_bytes + pz_gt_bytes + pz_bins_bytes + pz_misc_bytes + pz_grid_bytes +
-                  lowz_pz_bytes + photobest_bytes + restframe_mags_bytes
+                  lowz_pz_grid_bytes + lowz_pz_bytes + photobest_bytes + restframe_mags_bytes
 
     peak_bytes = persistent_bytes + chunk_bytes
     peak_gb = peak_bytes / (1024^3)
