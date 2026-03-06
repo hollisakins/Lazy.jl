@@ -956,7 +956,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
 
             # Pre-allocate normalized P(z) grid to avoid recomputing during I/O
             chunk_pz_grid = output_pz ? zeros(Float32, nz, chunk_nobj) : nothing
-            chunk_pz_grid_lowz = (output_pz && output_forced_lowz) ? zeros(Float32, nz, chunk_nobj) : nothing
+            chunk_pz_grid_lowz = (output_pz && output_forced_lowz) ? zeros(Float32, iz_lowz_max, chunk_nobj) : nothing
 
             # Pre-compute constant dz for uniform zgrid
             dz = zgrid[2] - zgrid[1]

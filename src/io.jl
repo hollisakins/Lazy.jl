@@ -418,8 +418,10 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
                           chunk=(nz, chunk_size))
             # Store lowz-normalized P(z) when forced low-z is enabled
             if output_forced_lowz
-                create_dataset(g_pz, "pz_lowz", Float32, (nz, nobj),
-                              chunk=(nz, chunk_size))
+                forced_lowz_zmax = Float64(param["io"]["forced_lowz_zmax"])
+                nz_lowz = searchsortedlast(zgrid, forced_lowz_zmax)
+                create_dataset(g_pz, "pz_lowz", Float32, (nz_lowz, nobj),
+                              chunk=(nz_lowz, chunk_size))
             end
         end
         
@@ -838,9 +840,11 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
 
             # Add lowz P(z) if available
             if haskey(h5f, "pz/pz_lowz")
-                pz_lowz = read(h5f["pz/pz_lowz"])  # (nz, nobj)
-                temp_pz_lowz = vcat(transpose(zgrid), transpose(pz_lowz))
-                data_pz["Pz_lowz"] = Dict("format" => "$(nz)E", "data" => temp_pz_lowz)
+                pz_lowz = read(h5f["pz/pz_lowz"])  # (nz_lowz, nobj)
+                nz_lowz = size(pz_lowz, 1)
+                lowz_zgrid = zgrid[1:nz_lowz]
+                temp_pz_lowz = vcat(transpose(lowz_zgrid), transpose(pz_lowz))
+                data_pz["Pz_lowz"] = Dict("format" => "$(nz_lowz)E", "data" => temp_pz_lowz)
             end
 
             write_data(fits_file, data_pz, "PZ")
@@ -1054,13 +1058,14 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 zgrid = read(meta, "zgrid")
                 nz = length(zgrid)
                 has_pz_lowz = haskey(h5f, "pz/pz_lowz")
+                nz_lowz = has_pz_lowz ? size(h5f["pz/pz_lowz"], 1) : 0
 
                 pz_coldefs = NTuple{3,String}[
                     ("ID", "1K", ""),
                     ("Pz", "$(nz)E", ""),
                 ]
                 if has_pz_lowz
-                    push!(pz_coldefs, ("Pz_lowz", "$(nz)E", ""))
+                    push!(pz_coldefs, ("Pz_lowz", "$(nz_lowz)E", ""))
                 end
                 CFITSIO.fits_create_binary_tbl(ff, nobj + 1, pz_coldefs, "PZ")
 
@@ -1068,7 +1073,7 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 CFITSIO.fits_write_col(ff, 1, 1, 1, Int64[-1])
                 CFITSIO.fits_write_col(ff, 2, 1, 1, Float32.(zgrid))
                 if has_pz_lowz
-                    CFITSIO.fits_write_col(ff, 3, 1, 1, Float32.(zgrid))
+                    CFITSIO.fits_write_col(ff, 3, 1, 1, Float32.(zgrid[1:nz_lowz]))
                 end
 
                 # Remaining rows: chunked from pre-computed pz dataset
@@ -1082,7 +1087,7 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                     CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(pz_chunk))
 
                     if has_pz_lowz
-                        pz_lowz_chunk = Float32.(h5f["pz/pz_lowz"][:, cs:ce])
+                        pz_lowz_chunk = Float32.(h5f["pz/pz_lowz"][:, cs:ce])  # (nz_lowz, chunk_nobj)
                         CFITSIO.fits_write_col(ff, 3, cs + 1, 1, vec(pz_lowz_chunk))
                     end
                 end
