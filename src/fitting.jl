@@ -969,7 +969,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             end
 
             # Pre-allocate per-thread working arrays for P(z) computation
-            _nt = Threads.nthreads()
+            # Use maxthreadid() to cover all possible thread IDs (including interactive thread)
+            _nt = Threads.maxthreadid()
             _pz_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
             _cpz_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
             _cum_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
