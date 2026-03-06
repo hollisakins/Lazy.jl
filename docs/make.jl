@@ -9,7 +9,7 @@ makedocs(;
         repo = "github.com/hollisakins/Lazy.jl",
         devbranch = "main",
         devurl = "dev",
-        deploy_url = "hollisakins.com/Lazy.jl",
+        deploy_url = "Lazy.jl",
     ),
     pages = [
         "Home" => "index.md",
