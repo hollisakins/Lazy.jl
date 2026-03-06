@@ -309,27 +309,26 @@ Handle final output dispatch based on output_format ("fits", "hdf5", or "both").
 """
 function finalize_output(work_file::String, output_file::String, output_format::String, preserve_work_file::Bool)
     if output_format == "fits" || output_format == "both"
-        # Derive FITS filename from output_file
         fits_file = endswith(output_file, ".fits") ? output_file : splitext(output_file)[1] * ".fits"
-        println("💾 Exporting to FITS: $fits_file")
-        convert_hdf5_to_fits(work_file, fits_file)
+        with_spinner("Exporting to FITS: $fits_file", "💾") do
+            convert_hdf5_to_fits(work_file, fits_file)
+        end
     end
 
     if output_format == "hdf5" || output_format == "both"
-        # Derive HDF5 filename from output_file
         hdf5_file = if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
             output_file
         else
             splitext(output_file)[1] * ".h5"
         end
 
-        if output_format == "both"
-            # Copy work file (don't move — still need it or preserve_work_file may keep it)
-            cp(work_file, hdf5_file, force=true)
-        else
-            mv(work_file, hdf5_file, force=true)
+        with_spinner("Saving results: $hdf5_file") do
+            if output_format == "both"
+                cp(work_file, hdf5_file, force=true)
+            else
+                mv(work_file, hdf5_file, force=true)
+            end
         end
-        println("✅ Results saved to: $hdf5_file")
     end
 
     # Clean up work file if it still exists and we're not preserving it
@@ -338,7 +337,7 @@ function finalize_output(work_file::String, output_file::String, output_format::
             println("💾 Work file preserved: $work_file")
         else
             rm(work_file)
-            println("🗑️ Work file automatically removed: $work_file")
+            println("🗑️ Work file removed: $work_file")
         end
     end
 end
@@ -596,10 +595,6 @@ function fit(param)
         end
     end
 
-    # Estimate and report memory usage
-    memory_estimate = estimate_memory_usage(nobj, nz, nband, ntempl)
-    print_memory_estimate(memory_estimate; chunked_processing=chunked_processing, target_memory_gb=target_memory_gb)
-    
     # Check for template cache before building grid
     use_cache = get(fitting, "template_cache", true)  # Default enabled
 
@@ -649,7 +644,7 @@ function fit(param)
         cached_data = load_template_cache(cache_key)
         if cached_data !== nothing
             templgrid, template_error_grid = cached_data
-            println("✅ Loading cached template grid ($(cache_key)) - " * summary(templgrid))
+            println("✓ Loading cached template grid ($(cache_key)) - " * summary(templgrid))
         end
     end
     
@@ -673,7 +668,7 @@ function fit(param)
         
         # Report template grid size
         templgrid_size_gb = sizeof(templgrid) / (1024^3)
-        println("✅ Template grid built: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
+        println("✓ Template grid built: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
         if templgrid_size_gb > 8.0
             println("⚠️ Large template grid detected. Consider reducing nz, nband, or ntempl if memory issues occur.")
         end
@@ -711,7 +706,7 @@ function fit(param)
         restframe_templgrid = with_spinner(
             () -> build_restframe_template_grid(templates, zgrid),
             "Building rest-frame magnitude grid", "📊")
-        println("✅ Rest-frame magnitude grid built: " * summary(restframe_templgrid))
+        println("✓ Rest-frame magnitude grid built: " * summary(restframe_templgrid))
     end
 
     # Always use fit_streaming() - it handles both chunked and in-memory modes
@@ -772,9 +767,9 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
         
         if action == "resume" && should_resume
             start_obj = last_obj + 1
-            println("✅ Resuming from object $start_obj")
+            println("✓ Resuming from object $start_obj")
         elseif action == "complete"
-            println("✅ Marking run as complete and generating output...")
+            println("✓ Marking run as complete and generating output...")
             finalize_hdf5_work_file(work_file)
             
             # Jump to output conversion
@@ -806,36 +801,31 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
     end
     
     # Determine chunk size based on processing mode
+    total_remaining = nobj - start_obj + 1
     if chunked_processing
-        # Use memory-controlled chunking
+        # Use memory-controlled chunking, then distribute uniformly
         chunk_size = get_chunk_size_for_memory_target(nobj, nz, target_memory_gb)
-        actual_memory_gb = chunk_size * nz * 4 / (1024^3)  # Float32 chi2 values
-        println("⚙️ Chunked processing: $(format_number(chunk_size)) objects per chunk (~$(round(actual_memory_gb, digits=2)) GB per chunk)")
+        total_chunks = cld(total_remaining, chunk_size)
+        chunk_size = cld(total_remaining, total_chunks)
+        println("⚙️ Chunked processing: $(format_number(chunk_size)) objects per chunk")
     else
         # In-memory mode: single chunk = entire catalog
-        chunk_size = nobj
-        estimated_gb = nobj * nz * 4 / (1024^3)  # Rough estimate for display
-        println("⚙️ In-memory processing: all $(format_number(nobj)) objects in single batch (~$(round(estimated_gb, digits=2)) GB)")
-        if estimated_gb > 8.0
-            println("   ⚠️  High memory usage detected. Consider setting chunked_processing = true if you encounter memory issues")
-        end
+        chunk_size = total_remaining
+        total_chunks = 1
+        println("⚙️ In-memory processing: all $(format_number(nobj)) objects in single batch")
     end
-    
+
+    # Estimate and report peak memory usage
+    mem = estimate_peak_memory(nobj, nz, nband, ntempl, chunk_size, maximum(zgrid);
+                               output_pz=output_pz, output_restframe_mags=output_restframe_mags,
+                               output_forced_lowz=output_forced_lowz)
+    print_memory_estimate(mem["estimated_peak"]; chunked=chunked_processing)
+
     # Precompute forced low-z index
     iz_lowz_max = output_forced_lowz ? searchsortedlast(zgrid, forced_lowz_zmax) : -1
 
-    # Initialize progress tracking
-    total_remaining = nobj - start_obj + 1
-    progress_bar = ProgressBar(total_remaining, "Fitting objects...", 
-                              show_rate=true, show_eta=true, prefix_emoji="🧠")
-    
-    # Display initial progress at 0%
-    display_progress(progress_bar)
-    
-    # Process objects in chunks
-    objects_processed = 0
-    
     # Set up interrupt handling
+    chunk_progress = nothing
     interrupted = Ref(false)
     
     try
@@ -843,7 +833,14 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
         for chunk_start in start_obj:chunk_size:nobj
             chunk_end = min(chunk_start + chunk_size - 1, nobj)
             chunk_nobj = chunk_end - chunk_start + 1
-            
+
+            # Per-chunk progress bar
+            chunk_idx = cld(chunk_start - start_obj + 1, chunk_size)
+            chunk_label = total_chunks > 1 ? "Fitting chunk $chunk_idx/$total_chunks..." : "Fitting objects..."
+            chunk_progress = ProgressBar(chunk_nobj, chunk_label,
+                                         show_rate=true, show_eta=true, prefix_emoji="🧠")
+            display_progress(chunk_progress)
+
             # Process this chunk
             chunk_IDs = IDs[chunk_start:chunk_end]
             chunk_fnu = fnu[chunk_start:chunk_end, :]
@@ -879,7 +876,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                         if interrupted[]
                             push!(batch_results, (j_local, -1.0, -1.0, zeros(ntempl), fill(Float32(-1.0), nz),
                                                   -1.0, -1.0, zeros(ntempl)))
-                            increment!(progress_bar)
+                            increment!(chunk_progress)
                             continue
                         end
 
@@ -902,7 +899,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
 
                         push!(batch_results, (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
                                               zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j))
-                        increment!(progress_bar)
+                        increment!(chunk_progress)
                     end
 
                     return batch_results
@@ -924,15 +921,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 end
             end
             
-            # Finish fitting progress bar for this chunk's objects
-            update!(progress_bar, min(objects_processed + chunk_nobj, total_remaining), force=true)
-            if chunk_end >= nobj || interrupted[]
-                finish!(progress_bar, final_message= interrupted[] ? "interrupted" : "")
-            end
+            finish!(chunk_progress, final_message= interrupted[] ? "interrupted" : "")
 
             # Calculate P(z) statistics for this chunk using per-object loop
             # to avoid materializing giant (nz, nobj) temporary arrays.
-            pz_t0 = time()
             z_integers = collect(1:floor(Int, maximum(zgrid)))
             z_max_grid = maximum(zgrid)
             Sz_bc = collect(0.0:1.0:z_max_grid)
@@ -976,6 +968,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 bin_indices[bin_idx] = (searchsortedfirst(zgrid, zlo), searchsortedlast(zgrid, zhi - eps()))
             end
 
+            with_spinner("Saving chunk results") do
             # Threaded P(z) computation — use task_local_storage for working arrays
             Threads.@threads for j in 1:chunk_nobj
                 pz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :pz_col)::Vector{Float64}
@@ -1124,9 +1117,6 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     end
                 end
             end
-
-            println("P(z) statistics computed ($(format_time(time() - pz_t0)))")
-
             # Build forced low-z result dict
             if output_forced_lowz
                 chunk_forced_lowz = Dict(
@@ -1149,7 +1139,6 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             end
 
             # Calculate best-fit photometry and rest-frame magnitudes (threaded)
-            phot_t0 = time()
             chunk_photobest = zeros(chunk_nobj, nband)
             chunk_restframe_mags = nothing
             if output_restframe_mags && restframe_templgrid !== nothing
@@ -1183,10 +1172,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     end
                 end
             end
-            println("Photometry computed ($(format_time(time() - phot_t0)))")
-
             # Write chunk results to HDF5
-            io_t0 = time()
             write_chunk_results(h5f, chunk_start, chunk_end,
                               chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
@@ -1197,30 +1183,21 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                               restframe_mags=chunk_restframe_mags,
                               forced_lowz=chunk_forced_lowz,
                               pz_grid=chunk_pz_grid)
-            println("I/O write completed ($(format_time(time() - io_t0)))")
-            
-            # Progress is now updated per-object within the threaded tasks
-            objects_processed += chunk_nobj
+            end # with_spinner saving chunk
         end
         flush(h5f)
         end # h5open
 
-        # Progress bar was already finished inside the chunk loop
-        
         # Generate template output if requested (after fitting is complete)
         if output_templ
-            println("📊 Generating template output...")
-            
-            # Use unified template grid builder for spectral mode
-            templgrid_spectral, _, wavelength_grid = build_template_grid(
-                templates, zgrid, param["fitting"]["igm_model"], param["fitting"];
-                output_type=:spectral,
-                add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c
-            )
-            
-            # Write template data to HDF5 work file
-            write_template_data(work_file, templgrid_spectral, wavelength_grid, zgrid, templates)
-            println("✅ Template output generated")
+            with_spinner("Generating template output") do
+                templgrid_spectral, _, wavelength_grid = build_template_grid(
+                    templates, zgrid, param["fitting"]["igm_model"], param["fitting"];
+                    output_type=:spectral,
+                    add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c
+                )
+                write_template_data(work_file, templgrid_spectral, wavelength_grid, zgrid, templates)
+            end
         end
         
         # Mark work file as complete
@@ -1234,7 +1211,9 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
             interrupted[] = true
             println("\n⚠️ Fitting interrupted by user. Processing results for completed objects...")
             finalize_hdf5_work_file(work_file)  # Mark as complete for resume
-            finish!(progress_bar, final_message="interrupted")
+            if chunk_progress !== nothing
+                finish!(chunk_progress, final_message="interrupted")
+            end
         else
             println("\n⚠️ Error during streaming fit: $e")
             println("💾 Partial results preserved in: $work_file")

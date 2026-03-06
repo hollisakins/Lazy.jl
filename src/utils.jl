@@ -190,11 +190,12 @@ end
 # Spinner utilities for dynamic feedback
 const SPINNER_CHARS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
-function with_spinner(operation::Function, message::String, success_emoji::String="✅")
+function with_spinner(operation::Function, message::String, success_emoji::String="✓")
     """
     Run an operation with a spinner for visual feedback.
     Falls back to static messages in non-interactive terminals.
     """
+    t0 = time()
     # Check for terminal capabilities - TTY detection doesn't work reliably through module invocation
     term_val = get(ENV, "TERM", "")
     has_proper_term = term_val != "dumb" && term_val != ""
@@ -203,7 +204,7 @@ function with_spinner(operation::Function, message::String, success_emoji::Strin
         # Use spinner for interactive terminals
         spinner_active = Ref(true)
         max_line_length = Ref(0)
-        
+
         # Run operation on a spawned thread, keep spinner on main thread
         result_ref = Ref{Any}(nothing)
         error_ref = Ref{Any}(nothing)
@@ -232,90 +233,99 @@ function with_spinner(operation::Function, message::String, success_emoji::Strin
         wait(work_task)
 
         # Clear spinner and print result
+        elapsed = format_time(time() - t0)
         clear_line = "\r" * " "^max_line_length[] * "\r"
         if error_ref[] !== nothing
             print(clear_line * "❌ $message (failed)\n")
             flush(stdout)
             throw(error_ref[])
         else
-            print("$clear_line$success_emoji $message\n")
+            print("$clear_line$success_emoji $message ($elapsed)\n")
             flush(stdout)
             return result_ref[]
         end
     else
         # Fallback for non-interactive terminals - only print completion message
         result = operation()
-        println("$success_emoji $message")
+        elapsed = format_time(time() - t0)
+        println("$success_emoji $message ($elapsed)")
         return result
     end
 end
 
-function estimate_memory_usage(nobj::Int, nz::Int, nband::Int, ntempl::Int)::Dict{String, Float64}
+function estimate_peak_memory(nobj::Int, nz::Int, nband::Int, ntempl::Int, chunk_size::Int,
+                              zmax::Float64;
+                              output_pz::Bool=false, output_restframe_mags::Bool=false,
+                              output_forced_lowz::Bool=false)
     """
-    Estimate memory usage for the fitting process in GB.
-    
-    Returns a dictionary with estimated memory usage for different components.
+    Estimate peak memory usage in GB.
+
+    Persistent arrays (live for entire run) + per-chunk arrays (one chunk at a time).
+    Peak occurs during P(z) computation when fitting results and P(z) stats coexist.
     """
-    # Template grid: nband × ntempl × nz × 4 bytes (Float32)
-    templgrid_gb = (ntempl * nz * nband * 4) / (1024^3)
-    
-    # Chi2 grid: nobj × nz × 4 bytes (Float32)  
-    chi2grid_gb = (nobj * nz * 4) / (1024^3)
-    
-    # Template error grid: nz × nband × 8 bytes (Float64)
-    template_error_gb = (nz * nband * 8) / (1024^3)
-    
-    # Best-fit coefficients: nobj × ntempl × 8 bytes (Float64)
-    coeffs_gb = (nobj * ntempl * 8) / (1024^3)
-    
-    # Photometric data: nobj × nband × 2 (flux + error) × 8 bytes
-    photdata_gb = (nobj * nband * 2 * 8) / (1024^3)
-    
-    # Working arrays per thread (templgrid_ij, fnu_mod_j per thread)
-    nthreads = Threads.nthreads()
-    working_arrays_gb = (nthreads * (nband * ntempl + nband) * 8) / (1024^3)
-    
-    # Total estimated peak usage
-    peak_gb = templgrid_gb + chi2grid_gb + template_error_gb + coeffs_gb + photdata_gb + working_arrays_gb
-    
+    n_z_integers = max(1, floor(Int, zmax))
+
+    # === Persistent arrays (always in memory) ===
+    # Template grid: nband × ntempl × nz × Float32
+    templgrid_bytes = nband * ntempl * nz * 4
+    # Template error grid: nz × nband × Float64
+    template_error_bytes = nz * nband * 8
+    # Input photometry: fnu + efnu (nobj × nband × Float64 × 2)
+    photdata_bytes = nobj * nband * 2 * 8
+    # IDs + zspec: nobj × 8 × 2
+    ids_bytes = nobj * 8 * 2
+    # Rest-frame template grid: 4 × ntempl × nz × Float64 (if enabled)
+    restframe_bytes = output_restframe_mags ? 4 * ntempl * nz * 8 : 0
+
+    persistent_bytes = templgrid_bytes + template_error_bytes + photdata_bytes + ids_bytes + restframe_bytes
+
+    # === Per-chunk arrays (one chunk live at a time) ===
+    C = chunk_size
+    # Fitting results: chi2grid (dominant), zbest, chi2best, coeffs, lowz variants
+    chi2grid_bytes = nz * C * 4  # Float32
+    fitting_scalars_bytes = C * 8 * 2  # zbest + chi2best
+    coeffs_bytes = C * ntempl * 8 * 2  # coeffsbest + coeffsbest_lowz
+    lowz_scalars_bytes = C * 8 * 2  # zbest_lowz + chi2best_lowz
+
+    # P(z) statistics arrays (coexist with fitting results at peak)
+    pz_quantiles_bytes = C * 8 * 5  # z_l95, z_l68, z_med, z_u68, z_u95
+    pz_gt_bytes = C * n_z_integers * 4  # Float32
+    pz_bins_bytes = C * (n_z_integers + 1) * 4  # n_bins ≈ n_z_integers + 1
+    pz_misc_bytes = C * (8 + 4 + 4)  # Sz(Float64) + pz_cen(Float32) + pz_zgtrzb2(Float32)
+    pz_grid_bytes = output_pz ? nz * C * 4 : 0  # Float32, same size as chi2grid
+
+    # Forced low-z P(z) arrays
+    lowz_pz_bytes = output_forced_lowz ? C * (8 * 6 + nband * 8) : 0  # quantiles + delta_chi2 + photobest_lowz
+
+    # Best-fit photometry
+    photobest_bytes = C * nband * 8
+    restframe_mags_bytes = output_restframe_mags ? C * 4 * 8 : 0
+
+    chunk_bytes = chi2grid_bytes + fitting_scalars_bytes + coeffs_bytes + lowz_scalars_bytes +
+                  pz_quantiles_bytes + pz_gt_bytes + pz_bins_bytes + pz_misc_bytes + pz_grid_bytes +
+                  lowz_pz_bytes + photobest_bytes + restframe_mags_bytes
+
+    peak_bytes = persistent_bytes + chunk_bytes
+    peak_gb = peak_bytes / (1024^3)
+
     return Dict(
-        "template_grid" => templgrid_gb,
-        "chi2_grid" => chi2grid_gb, 
-        "template_error_grid" => template_error_gb,
-        "coefficients" => coeffs_gb,
-        "photometric_data" => photdata_gb,
-        "working_arrays" => working_arrays_gb,
+        "persistent" => persistent_bytes / (1024^3),
+        "per_chunk" => chunk_bytes / (1024^3),
         "estimated_peak" => peak_gb
     )
 end
 
-function print_memory_estimate(mem_dict::Dict{String, Float64}; chunked_processing::Bool=false, target_memory_gb::Float64=0.5)
-    """
-    Print a formatted memory usage estimate.
-    """
-    if chunked_processing
-        peak_gb = mem_dict["estimated_peak"]
-        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        println("📊 Memory: ~$(round(peak_gb, digits=2)) GB peak (chunked processing enabled, ~$(target_memory_gb) GB per chunk)")
-        
-        if peak_gb > 32.0
-            println("   ⚠️  WARNING: Very high memory usage detected! Consider reducing chunk size")
-        elseif peak_gb > 16.0  
-            println("   ⚠️  CAUTION: High memory usage detected!")
-        end
-        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    else
-        peak_gb = mem_dict["estimated_peak"]
-        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        println("📊 Memory: ~$(round(peak_gb, digits=2)) GB peak")
-        
-        if peak_gb > 32.0
-            println("   ⚠️  WARNING: Very high memory usage detected! Consider using chunked processing")
-        elseif peak_gb > 16.0  
-            println("   ⚠️  CAUTION: High memory usage detected! Consider using chunked processing")
-        end
-        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+function print_memory_estimate(peak_gb::Float64; chunked::Bool=false)
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    println("📊 Estimated peak memory: ~$(round(peak_gb, digits=2)) GB")
+    if peak_gb > 32.0
+        msg = chunked ? "Consider reducing chunk size" : "Consider using chunked processing"
+        println("   ⚠️  WARNING: Very high memory usage detected! $msg")
+    elseif peak_gb > 16.0
+        msg = chunked ? "" : " Consider using chunked processing"
+        println("   ⚠️  CAUTION: High memory usage detected!$msg")
     end
+    println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 end
 
 function make_bins(wavs)
