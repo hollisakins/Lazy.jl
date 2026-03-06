@@ -968,23 +968,30 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 bin_indices[bin_idx] = (searchsortedfirst(zgrid, zlo), searchsortedlast(zgrid, zhi - eps()))
             end
 
+            # Pre-allocate per-thread working arrays for P(z) computation
+            _nt = Threads.nthreads()
+            _pz_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
+            _cpz_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
+            _cum_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
+
             with_spinner("Saving chunk results") do
-            # Threaded P(z) computation — use task_local_storage for working arrays
-            Threads.@threads for j in 1:chunk_nobj
-                pz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :pz_col)::Vector{Float64}
-                cpz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :cpz_col)::Vector{Float64}
-                cumtrapz_col = get!(() -> Vector{Float64}(undef, nz), task_local_storage(), :cumtrapz_col)::Vector{Float64}
+            # Threaded P(z) computation with static scheduling for per-thread buffer reuse
+            Threads.@threads :static for j in 1:chunk_nobj
+                tid = Threads.threadid()
+                pz_col = _pz_bufs[tid]
+                cpz_col = _cpz_bufs[tid]
+                cumtrapz_col = _cum_bufs[tid]
 
                 # Fused pass: exp + cumtrapz + CDF + pz_grid store
                 chi2_col = @view chunk_chi2grid[:, j]
                 store_pz = chunk_pz_grid !== nothing
 
                 @inbounds begin
-                    pz_col[1] = exp(-0.5 * Float64(chi2_col[1]))
+                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[1]))
                     cumtrapz_col[1] = 0.0
                     cpz_col[1] = pz_col[1]
                     for i in 2:nz
-                        pz_col[i] = exp(-0.5 * Float64(chi2_col[i]))
+                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[i]))
                         cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
                         cpz_col[i] = cpz_col[i-1] + pz_col[i]
                     end
