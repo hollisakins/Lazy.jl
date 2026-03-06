@@ -24,8 +24,8 @@ Use `lazy list-templates` to see available sets. Select a set in your parameter 
 The base sets can be extended with additional template components:
 
 - **Larson22**: High-redshift galaxy templates from Larson et al. (2022), designed for z > 6 candidates with young stellar populations and nebular emission
-- **Schrodinger** (`_schr`): Placeholder template for ambiguous sources
-- **LRD** (`_lrd`): Little Red Dot template for compact red sources at high redshift
+- **Schrodinger** (`_schr`): Model constructed to match the extreme z=4.9 "schrodinger's galaxy" ([Naidu+22](https://arxiv.org/abs/2208.02794), [Arrabal-Haro+23](https://ui.adsabs.harvard.edu/abs/2023Natur.622..707A/abstract)) with red continuum and strong emission lines.
+- **LRD** (`_lrd`): Little red dot template constructed from the best-fit model to CAPERS-LRD-z9 ([Taylor+25](https://ui.adsabs.harvard.edu/abs/2025ApJ...989L...7T/abstract)).
 
 | Template Set | Templates | Components |
 |-------------|-----------|------------|
