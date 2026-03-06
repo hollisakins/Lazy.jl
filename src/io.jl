@@ -1087,10 +1087,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 # Rows 2..nz+1: redshift grid values and template fluxes
                 CFITSIO.fits_write_col(ff, 1, 2, 1, Float32.(zgrid))
                 for (ti, tname) in enumerate(template_names)
-                    # Template data stored as (nwav, nz) in HDF5; need (nz, nwav) for FITS rows
-                    template_data = read(h5f["templates/$tname"])  # (nwav, nz)
-                    template_transposed = Float32.(permutedims(template_data))  # (nz, nwav)
-                    CFITSIO.fits_write_col(ff, 1 + ti, 2, 1, vec(template_transposed))
+                    # Template data stored as (nwav, nz) in HDF5 (Julia column-major).
+                    # vec() on (nwav, nz) naturally gives [all_wavs_z1, all_wavs_z2, ...]
+                    # which is the row-by-row order CFITSIO expects.
+                    template_data = Float32.(read(h5f["templates/$tname"]))  # (nwav, nz)
+                    CFITSIO.fits_write_col(ff, 1 + ti, 2, 1, vec(template_data))
                 end
             end
 
