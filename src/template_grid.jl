@@ -13,6 +13,39 @@ using DelimitedFiles
 using Trapz
 
 """
+    nearest_sorted_index(arr, val)
+
+Binary search for the index of the nearest value in a sorted array. O(log n), zero alloc.
+"""
+function nearest_sorted_index(arr::AbstractVector, val)
+    i = searchsortedfirst(arr, val)
+    i > length(arr) && return length(arr)
+    i == 1 && return 1
+    return abs(arr[i] - val) <= abs(arr[i-1] - val) ? i : i - 1
+end
+
+"""
+    compute_filter_weights(fwav, ftrans)
+
+Pre-compute normalized trapezoidal quadrature weights for filter integration.
+Returns (fwav, weights) where `dot(weights, fnu_interp)` equals the standard
+`trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)`.
+"""
+function compute_filter_weights(fwav::Vector{Float64}, ftrans::Vector{Float64})
+    nu = 1.0 ./ fwav
+    n = length(nu)
+    tw = Vector{Float64}(undef, n)
+    tw[1] = (nu[2] - nu[1]) / 2
+    @inbounds for i in 2:n-1
+        tw[i] = (nu[i+1] - nu[i-1]) / 2
+    end
+    tw[n] = (nu[n] - nu[n-1]) / 2
+    w = tw .* ftrans ./ nu
+    denom = sum(w)
+    return fwav, w ./ denom
+end
+
+"""
     determine_common_wavelength_grid(templates::Vector{String})
 
 Find the common wavelength grid by selecting the template with the largest wavelength array.
@@ -109,10 +142,11 @@ Arguments:
 - wavelength_grid: Optional for :spectral mode (auto-determined if nothing)
 
 Returns:
-For :photometry mode: (templgrid[ntempl,nz,nband], template_error_grid[nz,nband], nothing)
-For :spectral mode: (templgrid[ntempl,nz,nwav], nothing, wavelength_grid)
+For :photometry mode: (templgrid[nband,ntempl,nz], template_error_grid[nz,nband], nothing)
+For :spectral mode: (templgrid[nwav,ntempl,nz], nothing, wavelength_grid)
 
-The template grid shape is consistent (ntempl, nz, dimension3) for both modes.
+The template grid shape is (dimension3, ntempl, nz) for both modes, optimized for
+column-major access when slicing by redshift index.
 """
 function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
                            igm_model_name::String, fitting_params::Dict;
@@ -146,9 +180,15 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
         throw(LazyError("output_type must be :photometry or :spectral"))
     end
     
-    # Initialize template grid with consistent shape
-    templgrid = zeros(ntempl, nz, nintegration)
-    
+    # Initialize template grid: (nintegration, ntempl, nz) for column-major efficiency
+    templgrid = zeros(Float32, nintegration, ntempl, nz)
+
+    # Pre-compute filter integration weights (photometry mode only)
+    filter_data = nothing
+    if output_type == :photometry
+        filter_data = [compute_filter_weights(get_filter(band)...) for band in bands]
+    end
+
     # Load IGM model data (same for both modes)
     igm_redshifts, igm_wavelengths, igm_transmission, idx_igm, maxz = load_igm_model(igm_model_name)
     pr = Atomic{Bool}(true)  # Thread-safe print warning flag for high redshift
@@ -179,12 +219,23 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             working_wavelength_grid = templwav_i
             working_idx = idx
         end
-        
+
+        # Pre-compute normalization index (constant for this template)
+        if output_type == :spectral
+            windex = nearest_sorted_index(wavelength_grid, 1e4)
+        else
+            windex = nearest_sorted_index(templwav_i, 1e4)
+        end
+
         # Process each redshift (parallelized)
         @threads for j in 1:nz
+            # Declare thread-local variables to avoid data races with outer scope
+            local interp
+            local working_idx_local = working_idx
+
             z = zgrid[j]
             wav_obs = working_wavelength_grid .* (1 + z)
-            
+
             # Apply IGM transmission at this redshift
             if z > maxz
                 # Thread-safe test-and-set: only first thread to encounter high-z will print
@@ -199,22 +250,20 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             transmission = igm_transmission[iz_up,:]
             
             # Interpolate IGM transmission to working wavelength grid
-            # Handle edge cases for different wavelength grids
-            if working_idx > length(working_wavelength_grid)
-                # If working_idx is out of bounds (shouldn't happen), use last valid index
-                working_idx = length(working_wavelength_grid)
+            if working_idx_local > length(working_wavelength_grid)
+                working_idx_local = length(working_wavelength_grid)
             end
-            
-            if working_idx > 1
+
+            if working_idx_local > 1
                 interp = linear_interpolation([0.0; igm_wavelengths[1:idx_igm-1]], [0.0; transmission[1:idx_igm-1]], extrapolation_bc=Flat())
-                y1 = interp(working_wavelength_grid[1:working_idx-1])
+                y1 = interp(working_wavelength_grid[1:working_idx_local-1])
             else
                 y1 = Float64[]
             end
-            
-            if working_idx <= length(working_wavelength_grid)
+
+            if working_idx_local <= length(working_wavelength_grid)
                 interp = linear_interpolation([igm_wavelengths[idx_igm:end]; 1226.0], [transmission[idx_igm:end]; 1.0], extrapolation_bc=Flat())
-                y2 = interp(working_wavelength_grid[working_idx:end])
+                y2 = interp(working_wavelength_grid[working_idx_local:end])
             else
                 y2 = Float64[]
             end
@@ -243,7 +292,7 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
                 templfnu_j = templfnu_i .* transmission_interp
             else
                 # Redshift-dependent template
-                zindex = argmin(abs.(templz_i .- z))
+                zindex = nearest_sorted_index(templz_i, z)
                 if output_type == :spectral
                     # For spectral mode, interpolate template to common wavelength grid
                     interp = linear_interpolation(templwav_i, templfnu_i[:,zindex], extrapolation_bc=Flat())
@@ -255,32 +304,21 @@ function build_template_grid(templates::Vector{String}, zgrid::Vector{Float64},
             end
             
             # Normalize template to rest-1micron (numerical stability)
-            if output_type == :spectral
-                # For spectral mode, normalize based on wavelength_grid
-                windex = argmin(abs.(wavelength_grid .- 1e4))
-            else
-                # For photometry mode, normalize based on template wavelength
-                windex = argmin(abs.(templwav_i .- 1e4))
-            end
             templfnu_j /= templfnu_j[windex]
             
             # Integration step differs by mode
             if output_type == :photometry
-                # Integrate with filter transmission curves
+                # Integrate with pre-computed filter weights (dot product)
+                interp = linear_interpolation(wav_obs, templfnu_j)
                 for k in 1:nintegration
-                    band = bands[k]
-                    fwav, ftrans = get_filter(band)
-                    nu = 1 ./ fwav
-                    interp = linear_interpolation(wav_obs, templfnu_j)
-                    fnu_interp = interp(fwav)
-                    
-                    result = trapz(nu, fnu_interp .* ftrans ./ nu) / trapz(nu, ftrans ./ nu)
-                    templgrid[i, j, k] = result
+                    fwav_k, fw_k = filter_data[k]
+                    fnu_interp = interp(fwav_k)
+                    templgrid[k, i, j] = dot(fw_k, fnu_interp)
                 end
                 
             elseif output_type == :spectral
                 # Sample on wavelength grid (no filter integration)
-                templgrid[i, j, :] = templfnu_j
+                templgrid[:, i, j] = templfnu_j
             end
         end
         
@@ -337,7 +375,7 @@ Build rest-frame template grid integrated through 4 hardcoded rest-frame filters
 through rest-frame bandpasses. Normalization matches build_template_grid() (at
 rest-frame 10000A).
 
-Returns: restframe_templgrid[ntempl, nz, 4] where dim 3 = [M_UV, M_U, M_V, M_J]
+Returns: restframe_templgrid[4, ntempl, nz] where dim 1 = [M_UV, M_U, M_V, M_J]
 """
 function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{Float64})
     ntempl = length(templates)
@@ -346,15 +384,15 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
 
     # Hardcoded rest-frame filter nicknames
     rf_nicknames = ["rf_uv", "rf_u", "rf_v", "rf_j"]
-    rf_filters = [get_filter(nick) for nick in rf_nicknames]
+    rf_filter_data = [compute_filter_weights(get_filter(nick)...) for nick in rf_nicknames]
 
-    restframe_templgrid = zeros(ntempl, nz, nrf)
+    restframe_templgrid = zeros(nrf, ntempl, nz)
 
     for i in 1:ntempl
         templwav_i, templfnu_i, templz_i = load_template(templates[i])
 
         # Normalization index at rest-frame 10000A (same as build_template_grid line 263)
-        windex = argmin(abs.(templwav_i .- 1e4))
+        windex = nearest_sorted_index(templwav_i, 1e4)
 
         @threads for j in 1:nz
             z = zgrid[j]
@@ -363,7 +401,7 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
             if templz_i === nothing
                 templfnu_j = copy(templfnu_i)
             else
-                zindex = argmin(abs.(templz_i .- z))
+                zindex = nearest_sorted_index(templz_i, z)
                 templfnu_j = templfnu_i[:, zindex]
             end
 
@@ -374,17 +412,12 @@ function build_restframe_template_grid(templates::Vector{String}, zgrid::Vector{
             end
             templfnu_j = templfnu_j ./ norm_val
 
-            # Integrate through each rest-frame filter
+            # Integrate through each rest-frame filter (dot product with pre-computed weights)
+            interp = linear_interpolation(templwav_i, templfnu_j, extrapolation_bc=Flat())
             for k in 1:nrf
-                fwav, ftrans = rf_filters[k]
-                nu = 1.0 ./ fwav
-                interp = linear_interpolation(templwav_i, templfnu_j, extrapolation_bc=Flat())
-                fnu_interp = interp(fwav)
-
-                denom = trapz(nu, ftrans ./ nu)
-                if denom > 0
-                    restframe_templgrid[i, j, k] = trapz(nu, fnu_interp .* ftrans ./ nu) / denom
-                end
+                fwav_k, fw_k = rf_filter_data[k]
+                fnu_interp = interp(fwav_k)
+                restframe_templgrid[k, i, j] = dot(fw_k, fnu_interp)
             end
         end
     end

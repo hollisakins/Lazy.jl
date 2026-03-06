@@ -8,6 +8,7 @@ and template error precomputation.
 using TOML
 using FITSIO
 using NonNegLeastSquares
+using NonNegLeastSquares.NNLS: NNLSWorkspace, load!, nnls!
 using LinearAlgebra
 using Base.Threads
 using Trapz
@@ -54,8 +55,26 @@ function distance_modulus(z::Float64, H0::Float64, Om::Float64)::Float64
     return 5.0 * log10(d_L) + 25.0
 end
 
-function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float64},
-                          templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+"""
+    cdf_quantile_redshifts(cpz, zgrid, threshold)
+
+For each row of CDF matrix `cpz`, find the redshift at which the CDF first
+reaches `threshold` using binary search. Returns a vector of redshifts.
+"""
+function cdf_quantile_redshifts(cpz::AbstractMatrix, zgrid::AbstractVector, threshold::Float64)
+    nobj = size(cpz, 2)
+    result = Vector{Float64}(undef, nobj)
+    @inbounds for j in 1:nobj
+        col = @view cpz[:, j]
+        idx = searchsortedfirst(col, threshold)
+        idx = clamp(idx, 1, length(zgrid))
+        result[j] = zgrid[idx]
+    end
+    return result
+end
+
+function fit_single_object(j::Int, fnu_j::AbstractVector{Float64}, efnu_j::AbstractVector{Float64},
+                          templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                           zgrid::Vector{Float64}, nphot_min::Int, nband::Int, ntempl::Int, nz::Int;
                           interrupted_flag::Union{Nothing,Ref{Bool}}=nothing,
                           z_fix_idx::Int=-1, lowz_max_idx::Int=-1)
@@ -65,7 +84,20 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
         # Pre-allocate working arrays to avoid repeated allocations
         templgrid_ij = Matrix{Float64}(undef, nband, ntempl)
         fnu_mod_j = Vector{Float64}(undef, nband)
+        efnu_tot_j = Vector{Float64}(undef, nband)
+        snr_j = Vector{Float64}(undef, nband)
+        valid = BitVector(undef, nband)
         chi2_row = Vector{Float32}(undef, nz)
+
+        # NNLS workspace and valid-only buffers (nband is max possible nvalid)
+        nnls_work = NNLSWorkspace{Float64, Int}(nband, ntempl)
+        A_valid = Matrix{Float64}(undef, nband, ntempl)
+        b_valid = Vector{Float64}(undef, nband)
+
+        # Pre-compute per-object constants (don't change with redshift)
+        fnu_positive = max.(fnu_j, 0.0)
+        fnu_finite = isfinite.(fnu_j)
+        snr_raw = fnu_j ./ efnu_j
 
         # Handle fixed redshift (z_spec mode)
         if z_fix_idx > 0
@@ -94,34 +126,55 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 break
             end
             
-            templgrid_i = templgrid[:,i,:]
-            tefz = template_error_grid[i, :]
-            
-            efnu_tot_j = sqrt.( efnu_j .^ 2 + (tefz .* max.(fnu_j, 0.0)) .^ 2 )
-            
-            valid = isfinite.(fnu_j) .&  isfinite.(efnu_tot_j) .& (efnu_tot_j .> 0.0)
-            if sum(valid) < 2
+            templgrid_i = @view templgrid[:,:,i]
+            tefz = @view template_error_grid[i, :]
+
+            # Compute total error and validity masks in-place
+            nvalid = 0
+            ndetect = 0
+            @inbounds for k in 1:nband
+                efnu_tot_j[k] = sqrt(efnu_j[k]^2 + (tefz[k] * fnu_positive[k])^2)
+                v = fnu_finite[k] & isfinite(efnu_tot_j[k]) & (efnu_tot_j[k] > 0.0)
+                valid[k] = v
+                nvalid += v
+                ndetect += v & (snr_raw[k] > 2.0)
+            end
+            if nvalid < 2
                 chi2_row[i] = -1
                 continue
             end
-            
-            detect = valid .& ((fnu_j ./ efnu_j) .> 2.0)
-            if sum(detect) < nphot_min
+            if ndetect < nphot_min
                 chi2_row[i] = -1
                 continue
             end
+
+            @inbounds for k in 1:nband
+                snr_j[k] = fnu_j[k] / efnu_tot_j[k]
+            end
             
-            snr_j = fnu_j ./ efnu_tot_j
-            
-            # Optimized: avoid transpose by using templgrid_i directly with broadcasting
-            # templgrid_i is (ntempl, nband), we need (nband, ntempl) divided by efnu_tot_j
+            # templgrid_i is (nband, ntempl), divide each row by efnu_tot_j
             for k in 1:nband
                 for t in 1:ntempl
-                    templgrid_ij[k, t] = templgrid_i[t, k] / efnu_tot_j[k]
+                    templgrid_ij[k, t] = templgrid_i[k, t] / efnu_tot_j[k]
                 end
             end
             
-            result = nonneg_lsq(templgrid_ij[valid,:], snr_j[valid] ; alg=:nnls)[:]
+            # Copy valid rows into pre-allocated buffers
+            nv = 0
+            @inbounds for k in 1:nband
+                if valid[k]
+                    nv += 1
+                    b_valid[nv] = snr_j[k]
+                    for t in 1:ntempl
+                        A_valid[nv, t] = templgrid_ij[k, t]
+                    end
+                end
+            end
+            A_view = @view A_valid[1:nv, :]
+            b_view = @view b_valid[1:nv]
+            load!(nnls_work, A_view, b_view)
+            nnls!(nnls_work, 10 * ntempl)
+            result = nnls_work.x
             
             # Numerical stability checks
             if !all(isfinite, result)
@@ -130,20 +183,25 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
                 continue
             end
             
-            if all(result .≈ 0.0)
+            if all(x -> x ≈ 0.0, result)
                 #@warn "⚠️ All-zero coefficients detected for object $j at z=$(zgrid[i]). Poor template fit."
                 chi2_row[i] = 1e10  # High chi2 to mark as poor fit
                 continue
             end
             
-            # Optimized: avoid transpose by manual matrix multiplication
             fill!(fnu_mod_j, 0.0)
             for k in 1:nband
                 for t in 1:ntempl
-                    fnu_mod_j[k] += templgrid_i[t, k] * result[t]
+                    fnu_mod_j[k] += templgrid_i[k, t] * result[t]
                 end
             end
-            chi2_j = sum(((fnu_j[valid] .- fnu_mod_j[valid]) .^ 2) ./ efnu_tot_j[valid] .^ 2)
+            chi2_j = 0.0
+            @inbounds for k in 1:nband
+                if valid[k]
+                    residual = fnu_j[k] - fnu_mod_j[k]
+                    chi2_j += (residual / efnu_tot_j[k])^2
+                end
+            end
             
             # Additional numerical stability check for chi2
             if !isfinite(chi2_j) || chi2_j < 0
@@ -159,14 +217,14 @@ function fit_single_object(j::Int, fnu_j::Vector{Float64}, efnu_j::Vector{Float6
             if chi2_j < best_chi2
                 best_chi2 = chi2_j
                 best_z_idx = i
-                best_coeffs = result
+                copyto!(best_coeffs, result)
             end
 
             # Update low-z best fit if within restricted range
             if lowz_max_idx > 0 && i <= lowz_max_idx && chi2_j < lowz_best_chi2
                 lowz_best_chi2 = chi2_j
                 lowz_best_z_idx = i
-                lowz_best_coeffs = copy(result)
+                copyto!(lowz_best_coeffs, result)
             end
         end
     
@@ -251,27 +309,26 @@ Handle final output dispatch based on output_format ("fits", "hdf5", or "both").
 """
 function finalize_output(work_file::String, output_file::String, output_format::String, preserve_work_file::Bool)
     if output_format == "fits" || output_format == "both"
-        # Derive FITS filename from output_file
         fits_file = endswith(output_file, ".fits") ? output_file : splitext(output_file)[1] * ".fits"
-        println("💾 Exporting to FITS: $fits_file")
-        convert_hdf5_to_fits(work_file, fits_file)
+        with_spinner("Exporting to FITS: $fits_file", "💾") do
+            convert_hdf5_to_fits(work_file, fits_file)
+        end
     end
 
     if output_format == "hdf5" || output_format == "both"
-        # Derive HDF5 filename from output_file
         hdf5_file = if endswith(output_file, ".h5") || endswith(output_file, ".hdf5")
             output_file
         else
             splitext(output_file)[1] * ".h5"
         end
 
-        if output_format == "both"
-            # Copy work file (don't move — still need it or preserve_work_file may keep it)
-            cp(work_file, hdf5_file, force=true)
-        else
-            mv(work_file, hdf5_file, force=true)
+        with_spinner("Saving results: $hdf5_file") do
+            if output_format == "both"
+                cp(work_file, hdf5_file, force=true)
+            else
+                mv(work_file, hdf5_file, force=true)
+            end
         end
-        println("✅ Results saved to: $hdf5_file")
     end
 
     # Clean up work file if it still exists and we're not preserving it
@@ -280,12 +337,12 @@ function finalize_output(work_file::String, output_file::String, output_format::
             println("💾 Work file preserved: $work_file")
         else
             rm(work_file)
-            println("🗑️ Work file automatically removed: $work_file")
+            println("🗑️ Work file removed: $work_file")
         end
     end
 end
 
-function fit(param)
+function fit(param; auto_yes::Bool=false)
 
     # Load in TOML parameter file
     if !isfile(param)
@@ -538,10 +595,6 @@ function fit(param)
         end
     end
 
-    # Estimate and report memory usage
-    memory_estimate = estimate_memory_usage(nobj, nz, nband, ntempl)
-    print_memory_estimate(memory_estimate; chunked_processing=chunked_processing, target_memory_gb=target_memory_gb)
-    
     # Check for template cache before building grid
     use_cache = get(fitting, "template_cache", true)  # Default enabled
 
@@ -591,7 +644,7 @@ function fit(param)
         cached_data = load_template_cache(cache_key)
         if cached_data !== nothing
             templgrid, template_error_grid = cached_data
-            println("✅ Loading cached template grid ($(cache_key)) - " * summary(templgrid))
+            println("✓ Loading cached template grid ($(cache_key)) - " * summary(templgrid))
         end
     end
     
@@ -615,7 +668,7 @@ function fit(param)
         
         # Report template grid size
         templgrid_size_gb = sizeof(templgrid) / (1024^3)
-        println("✅ Template grid built: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
+        println("✓ Template grid built: " * summary(templgrid) * " (~$(round(templgrid_size_gb, digits=2)) GB)")
         if templgrid_size_gb > 8.0
             println("⚠️ Large template grid detected. Consider reducing nz, nband, or ntempl if memory issues occur.")
         end
@@ -652,8 +705,8 @@ function fit(param)
     if output_restframe_mags
         restframe_templgrid = with_spinner(
             () -> build_restframe_template_grid(templates, zgrid),
-            "Building rest-frame template grid", "📊")
-        println("✅ Rest-frame template grid built: " * summary(restframe_templgrid))
+            "Building rest-frame magnitude grid", "📊")
+        println("✓ Rest-frame magnitude grid built: " * summary(restframe_templgrid))
     end
 
     # Always use fit_streaming() - it handles both chunked and in-memory modes
@@ -666,11 +719,12 @@ function fit(param)
                        restframe_templgrid=restframe_templgrid,
                        flux_zp=flux_zp, cosmo_H0=cosmo_H0, cosmo_Om=cosmo_Om,
                        output_forced_lowz=output_forced_lowz,
-                       forced_lowz_zmax=forced_lowz_zmax)
+                       forced_lowz_zmax=forced_lowz_zmax,
+                       auto_yes=auto_yes)
 end
 
 """
-    fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+    fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                   zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
                   nobj::Int, nz::Int, nband::Int, ntempl::Int,
                   fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
@@ -683,7 +737,7 @@ When chunked_processing=false, uses single chunk (in-memory mode).
 When chunked_processing=true, uses memory-controlled chunking.
 output_format controls final output: "fits", "hdf5", or "both".
 """
-function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                       zgrid::Vector{Float64}, bands::Vector{String}, templates::Vector{String},
                       nobj::Int, nz::Int, nband::Int, ntempl::Int,
                       fnu::Matrix{Float64}, efnu::Matrix{Float64}, IDs::Vector{Int},
@@ -693,7 +747,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                       output_restframe_mags::Bool=false,
                       restframe_templgrid::Union{Nothing,Array{Float64,3}}=nothing,
                       flux_zp::Float64=0.0, cosmo_H0::Float64=70.0, cosmo_Om::Float64=0.3,
-                      output_forced_lowz::Bool=false, forced_lowz_zmax::Float64=0.0)
+                      output_forced_lowz::Bool=false, forced_lowz_zmax::Float64=0.0,
+                      auto_yes::Bool=false)
     
     # CGM params (read from fitting section)
     fitting = param["fitting"]
@@ -710,13 +765,13 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
     start_obj = 1
     
     if can_resume
-        action, should_resume = prompt_resume(work_file, last_obj, nobj)
+        action, should_resume = prompt_resume(work_file, last_obj, nobj; auto_yes=auto_yes)
         
         if action == "resume" && should_resume
             start_obj = last_obj + 1
-            println("✅ Resuming from object $start_obj")
+            println("✓ Resuming from object $start_obj")
         elseif action == "complete"
-            println("✅ Marking run as complete and generating output...")
+            println("✓ Marking run as complete and generating output...")
             finalize_hdf5_work_file(work_file)
             
             # Jump to output conversion
@@ -748,43 +803,46 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
     end
     
     # Determine chunk size based on processing mode
+    total_remaining = nobj - start_obj + 1
     if chunked_processing
-        # Use memory-controlled chunking
+        # Use memory-controlled chunking, then distribute uniformly
         chunk_size = get_chunk_size_for_memory_target(nobj, nz, target_memory_gb)
-        actual_memory_gb = chunk_size * nz * 4 / (1024^3)  # Float32 chi2 values
-        println("⚙️ Chunked processing: $(format_number(chunk_size)) objects per chunk (~$(round(actual_memory_gb, digits=2)) GB per chunk)")
+        total_chunks = cld(total_remaining, chunk_size)
+        chunk_size = cld(total_remaining, total_chunks)
+        println("⚙️ Chunked processing: $(format_number(chunk_size)) objects per chunk")
     else
         # In-memory mode: single chunk = entire catalog
-        chunk_size = nobj
-        estimated_gb = nobj * nz * 4 / (1024^3)  # Rough estimate for display
-        println("⚙️ In-memory processing: all $(format_number(nobj)) objects in single batch (~$(round(estimated_gb, digits=2)) GB)")
-        if estimated_gb > 8.0
-            println("   ⚠️  High memory usage detected. Consider setting chunked_processing = true if you encounter memory issues")
-        end
+        chunk_size = total_remaining
+        total_chunks = 1
+        println("⚙️ In-memory processing: all $(format_number(nobj)) objects in single batch")
     end
-    
+
+    # Estimate and report peak memory usage
+    mem = estimate_peak_memory(nobj, nz, nband, ntempl, chunk_size, maximum(zgrid);
+                               output_pz=output_pz, output_restframe_mags=output_restframe_mags,
+                               output_forced_lowz=output_forced_lowz)
+    print_memory_estimate(mem["estimated_peak"]; chunked=chunked_processing)
+
     # Precompute forced low-z index
     iz_lowz_max = output_forced_lowz ? searchsortedlast(zgrid, forced_lowz_zmax) : -1
 
-    # Initialize progress tracking
-    total_remaining = nobj - start_obj + 1
-    progress_bar = ProgressBar(total_remaining, "Fitting objects...", 
-                              show_rate=true, show_eta=true, prefix_emoji="🧠")
-    
-    # Display initial progress at 0%
-    display_progress(progress_bar)
-    
-    # Process objects in chunks
-    objects_processed = 0
-    
     # Set up interrupt handling
+    chunk_progress = nothing
     interrupted = Ref(false)
     
     try
+        h5open(work_file, "r+") do h5f
         for chunk_start in start_obj:chunk_size:nobj
             chunk_end = min(chunk_start + chunk_size - 1, nobj)
             chunk_nobj = chunk_end - chunk_start + 1
-            
+
+            # Per-chunk progress bar
+            chunk_idx = cld(chunk_start - start_obj + 1, chunk_size)
+            chunk_label = total_chunks > 1 ? "Fitting chunk $chunk_idx/$total_chunks..." : "Fitting objects..."
+            chunk_progress = ProgressBar(chunk_nobj, chunk_label,
+                                         show_rate=true, show_eta=true, prefix_emoji="🧠")
+            display_progress(chunk_progress)
+
             # Process this chunk
             chunk_IDs = IDs[chunk_start:chunk_end]
             chunk_fnu = fnu[chunk_start:chunk_end, :]
@@ -794,7 +852,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
             chunk_zbest = zeros(chunk_nobj)
             chunk_chi2best = zeros(chunk_nobj)
             chunk_coeffsbest = zeros(chunk_nobj, ntempl)
-            chunk_chi2grid = zeros(Float32, chunk_nobj, nz)
+            chunk_chi2grid = zeros(Float32, nz, chunk_nobj)
 
             # Forced low-z result arrays
             chunk_zbest_lowz = fill(-1.0, chunk_nobj)
@@ -820,7 +878,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                         if interrupted[]
                             push!(batch_results, (j_local, -1.0, -1.0, zeros(ntempl), fill(Float32(-1.0), nz),
                                                   -1.0, -1.0, zeros(ntempl)))
-                            increment!(progress_bar)
+                            increment!(chunk_progress)
                             continue
                         end
 
@@ -829,12 +887,12 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                         # Compute fixed redshift index if z_spec available
                         z_fix_idx_j = -1
                         if use_zspec && isfinite(zspec[j_global])
-                            z_fix_idx_j = argmin(abs.(zgrid .- zspec[j_global]))
+                            z_fix_idx_j = nearest_sorted_index(zgrid, zspec[j_global])
                         end
 
                         zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
                             zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j = fit_single_object(
-                            j_global, chunk_fnu[j_local,:], chunk_efnu[j_local,:],
+                            j_global, @view(chunk_fnu[j_local,:]), @view(chunk_efnu[j_local,:]),
                             templgrid, template_error_grid, zgrid, nphot_min,
                             nband, ntempl, nz;
                             interrupted_flag=interrupted, z_fix_idx=z_fix_idx_j,
@@ -843,7 +901,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
 
                         push!(batch_results, (j_local, zbest_j, chi2best_j, coeffsbest_j, chi2_row_j,
                                               zbest_lowz_j, chi2best_lowz_j, coeffsbest_lowz_j))
-                        increment!(progress_bar)
+                        increment!(chunk_progress)
                     end
 
                     return batch_results
@@ -858,56 +916,146 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     chunk_zbest[j_local] = zbest_j
                     chunk_chi2best[j_local] = chi2best_j
                     chunk_coeffsbest[j_local, :] = coeffsbest_j
-                    chunk_chi2grid[j_local, :] = chi2_row_j
+                    chunk_chi2grid[:, j_local] = chi2_row_j
                     chunk_zbest_lowz[j_local] = zbest_lowz_j
                     chunk_chi2best_lowz[j_local] = chi2best_lowz_j
                     chunk_coeffsbest_lowz[j_local, :] = coeffsbest_lowz_j
                 end
             end
             
-            # Calculate P(z) statistics for this chunk (always computed)
-            pz_chunk = exp.(-0.5 * chunk_chi2grid)
-            cpz_chunk = cumsum(pz_chunk, dims=2) ./ sum(pz_chunk, dims=2)
+            finish!(chunk_progress, final_message= interrupted[] ? "interrupted" : "")
 
-            chunk_z_l95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.025)))]
-            chunk_z_l68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.160)))]
-            chunk_z_med = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.500)))]
-            chunk_z_u68 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.840)))]
-            chunk_z_u95 = zgrid[map(argmin, eachrow(abs.(cpz_chunk .- 0.975)))]
-
-            # Integrated P(z) quantities: P(z > Z), Sz, Pz bins, Pz_cen, Pz_zgtrzb2
+            # Calculate P(z) statistics for this chunk using per-object loop
+            # to avoid materializing giant (nz, nobj) temporary arrays.
             z_integers = collect(1:floor(Int, maximum(zgrid)))
-            chunk_pz_gt = fill(Float32(-1), chunk_nobj, length(z_integers))
             z_max_grid = maximum(zgrid)
             Sz_bc = collect(0.0:1.0:z_max_grid)
             n_bins = length(Sz_bc)
+            lowz_zgrid = output_forced_lowz ? zgrid[1:iz_lowz_max] : Float64[]
+
+            chunk_z_l95 = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_l68 = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_med = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_u68 = Vector{Float64}(undef, chunk_nobj)
+            chunk_z_u95 = Vector{Float64}(undef, chunk_nobj)
+            chunk_pz_gt = fill(Float32(-1), chunk_nobj, length(z_integers))
             chunk_Sz = fill(-1.0, chunk_nobj)
             chunk_pz_bins = fill(Float32(-1), chunk_nobj, n_bins)
             chunk_pz_cen = fill(Float32(-1), chunk_nobj)
             chunk_pz_zgtrzb2 = fill(Float32(-1), chunk_nobj)
 
-            for j in 1:chunk_nobj
-                total = trapz(zgrid, @view pz_chunk[j, :])
-                total <= 0 && continue
+            # Forced low-z arrays
+            chunk_forced_lowz = nothing
+            chunk_delta_chi2 = output_forced_lowz ? fill(NaN, chunk_nobj) : nothing
+            chunk_z_l95_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_l68_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_med_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_u68_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_z_u95_lowz = output_forced_lowz ? Vector{Float64}(undef, chunk_nobj) : nothing
+            chunk_photobest_lowz = output_forced_lowz ? zeros(chunk_nobj, nband) : nothing
 
-                # P(z > Z) for each integer Z
+            # Pre-allocate normalized P(z) grid to avoid recomputing during I/O
+            chunk_pz_grid = output_pz ? zeros(Float32, nz, chunk_nobj) : nothing
+
+            # Pre-compute constant dz for uniform zgrid
+            dz = zgrid[2] - zgrid[1]
+            half_dz = 0.5 * dz
+
+            # Pre-compute bin edge indices (constant for all objects, zgrid is uniform)
+            z_gt_indices = [clamp(searchsortedfirst(zgrid, Z + eps()), 1, nz) for (_, Z) in enumerate(z_integers)]
+            bin_indices = Vector{Tuple{Int,Int}}(undef, length(Sz_bc))
+            for (bin_idx, bc) in enumerate(Sz_bc)
+                zlo = bc == 0.0 ? 0.0 : bc - 0.5
+                zhi = bc == z_max_grid ? z_max_grid : bc + 0.5
+                bin_indices[bin_idx] = (searchsortedfirst(zgrid, zlo), searchsortedlast(zgrid, zhi - eps()))
+            end
+
+            # Pre-allocate per-thread working arrays for P(z) computation
+            # Use maxthreadid() to cover all possible thread IDs (including interactive thread)
+            _nt = Threads.maxthreadid()
+            _pz_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
+            _cpz_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
+            _cum_bufs = [Vector{Float64}(undef, nz) for _ in 1:_nt]
+
+            with_spinner("Saving chunk results") do
+            # Threaded P(z) computation with static scheduling for per-thread buffer reuse
+            Threads.@threads :static for j in 1:chunk_nobj
+                tid = Threads.threadid()
+                pz_col = _pz_bufs[tid]
+                cpz_col = _cpz_bufs[tid]
+                cumtrapz_col = _cum_bufs[tid]
+
+                # Fused pass: exp + cumtrapz + CDF + pz_grid store
+                chi2_col = @view chunk_chi2grid[:, j]
+                store_pz = chunk_pz_grid !== nothing
+
+                @inbounds begin
+                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[1]))
+                    cumtrapz_col[1] = 0.0
+                    cpz_col[1] = pz_col[1]
+                    for i in 2:nz
+                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[i]))
+                        cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
+                        cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                    end
+                end
+
+                total = cumtrapz_col[nz]
+                if total <= 0
+                    chunk_z_l95[j] = -1.0
+                    chunk_z_l68[j] = -1.0
+                    chunk_z_med[j] = -1.0
+                    chunk_z_u68[j] = -1.0
+                    chunk_z_u95[j] = -1.0
+                    if output_forced_lowz
+                        chunk_z_l95_lowz[j] = -1.0
+                        chunk_z_l68_lowz[j] = -1.0
+                        chunk_z_med_lowz[j] = -1.0
+                        chunk_z_u68_lowz[j] = -1.0
+                        chunk_z_u95_lowz[j] = -1.0
+                    end
+                    continue
+                end
+
+                # Store normalized P(z) for HDF5 output
+                if store_pz
+                    inv_total = Float32(1.0 / total)
+                    @inbounds for i in 1:nz
+                        chunk_pz_grid[i, j] = Float32(pz_col[i]) * inv_total
+                    end
+                end
+
+                # Normalize CDF
+                cpz_norm = cpz_col[nz]
+                if cpz_norm > 0
+                    inv_cpz = 1.0 / cpz_norm
+                    @inbounds for i in 1:nz
+                        cpz_col[i] *= inv_cpz
+                    end
+                end
+
+                # Quantiles via binary search on CDF
+                chunk_z_l95[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.025), 1, nz)]
+                chunk_z_l68[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.160), 1, nz)]
+                chunk_z_med[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.500), 1, nz)]
+                chunk_z_u68[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.840), 1, nz)]
+                chunk_z_u95[j] = zgrid[clamp(searchsortedfirst(cpz_col, 0.975), 1, nz)]
+
+                # P(z > Z) for each integer Z — O(1) via cumulative integral
+                inv_total = 1.0 / total
                 for (zi, Z) in enumerate(z_integers)
-                    idx = searchsortedfirst(zgrid, Z + eps())
-                    idx > length(zgrid) && continue
-                    chunk_pz_gt[j, zi] = Float32(trapz(@view(zgrid[idx:end]), @view(pz_chunk[j, idx:end])) / total)
+                    idx = z_gt_indices[zi]
+                    idx > nz && continue
+                    chunk_pz_gt[j, zi] = Float32((cumtrapz_col[nz] - cumtrapz_col[idx]) * inv_total)
                 end
 
                 # Sz: center of the unit-width bin with the most P(z)
-                # Also store per-bin integrated probabilities
                 best_prob = -1.0
                 best_bc = -1.0
                 for (bin_idx, bc) in enumerate(Sz_bc)
-                    zlo = bc == 0.0 ? 0.0 : bc - 0.5
-                    zhi = bc == z_max_grid ? z_max_grid : bc + 0.5
-                    ilo = searchsortedfirst(zgrid, zlo)
-                    ihi = searchsortedlast(zgrid, zhi - eps())
+                    ilo, ihi = bin_indices[bin_idx]
                     ilo > ihi && continue
-                    prob = trapz(@view(zgrid[ilo:ihi]), @view(pz_chunk[j, ilo:ihi])) / total
+                    prob = (cumtrapz_col[ihi] - cumtrapz_col[ilo]) * inv_total
                     chunk_pz_bins[j, bin_idx] = Float32(prob)
                     if prob > best_prob
                         best_prob = prob
@@ -916,56 +1064,71 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 end
                 chunk_Sz[j] = best_bc
 
-                # Pz_cen: P(|z - zbest| < 0.15*(1+zbest))
+                # Pz_cen and Pz_zgtrzb2
                 zb = chunk_zbest[j]
                 if zb > 0
                     dz_window = 0.15 * (1.0 + zb)
                     ilo_cen = searchsortedfirst(zgrid, zb - dz_window)
                     ihi_cen = searchsortedlast(zgrid, zb + dz_window)
                     if ilo_cen <= ihi_cen
-                        chunk_pz_cen[j] = Float32(trapz(@view(zgrid[ilo_cen:ihi_cen]), @view(pz_chunk[j, ilo_cen:ihi_cen])) / total)
+                        chunk_pz_cen[j] = Float32((cumtrapz_col[ihi_cen] - cumtrapz_col[ilo_cen]) * inv_total)
                     end
-
-                    # Pz_zgtrzb2: P(zbest - 2 < z < zmax)
                     ilo_zb2 = searchsortedfirst(zgrid, zb - 2.0)
-                    chunk_pz_zgtrzb2[j] = Float32(trapz(@view(zgrid[ilo_zb2:end]), @view(pz_chunk[j, ilo_zb2:end])) / total)
+                    chunk_pz_zgtrzb2[j] = Float32((cumtrapz_col[nz] - cumtrapz_col[ilo_zb2]) * inv_total)
                 end
-            end
 
-            # Compute forced low-z derived quantities (needs chi2grid, so must come before nulling)
-            chunk_forced_lowz = nothing
-            if output_forced_lowz
-                chunk_delta_chi2 = fill(NaN, chunk_nobj)
-                for j in 1:chunk_nobj
+                # Forced low-z quantities (computed per-object from chi2grid column)
+                if output_forced_lowz
                     if chunk_chi2best[j] > 0 && chunk_chi2best_lowz[j] > 0
                         chunk_delta_chi2[j] = chunk_chi2best_lowz[j] - chunk_chi2best[j]
                     end
-                end
 
-                # Lowz P(z) quantiles from chi2 grid restricted to [1:iz_lowz_max]
-                lowz_chi2 = chunk_chi2grid[:, 1:iz_lowz_max]
-                lowz_pz = exp.(-0.5 * lowz_chi2)
-                lowz_cpz = cumsum(lowz_pz, dims=2) ./ sum(lowz_pz, dims=2)
-                lowz_zgrid = zgrid[1:iz_lowz_max]
+                    # Lowz P(z) and CDF — reuse pz_col values already computed above
+                    lowz_nz = iz_lowz_max
+                    lowz_total = 0.0
+                    @inbounds for i in 1:lowz_nz
+                        lowz_total += pz_col[i]
+                    end
+                    if lowz_total > 0
+                        cpz_col[1] = pz_col[1]
+                        @inbounds for i in 2:lowz_nz
+                            cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                        end
+                        lowz_cpz_norm = cpz_col[lowz_nz]
+                        if lowz_cpz_norm > 0
+                            @inbounds for i in 1:lowz_nz
+                                cpz_col[i] /= lowz_cpz_norm
+                            end
+                        end
+                        lowz_cpz_view = @view cpz_col[1:lowz_nz]
+                        chunk_z_l95_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.025), 1, lowz_nz)]
+                        chunk_z_l68_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.160), 1, lowz_nz)]
+                        chunk_z_med_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.500), 1, lowz_nz)]
+                        chunk_z_u68_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.840), 1, lowz_nz)]
+                        chunk_z_u95_lowz[j] = lowz_zgrid[clamp(searchsortedfirst(lowz_cpz_view, 0.975), 1, lowz_nz)]
+                    else
+                        chunk_z_l95_lowz[j] = -1.0
+                        chunk_z_l68_lowz[j] = -1.0
+                        chunk_z_med_lowz[j] = -1.0
+                        chunk_z_u68_lowz[j] = -1.0
+                        chunk_z_u95_lowz[j] = -1.0
+                    end
 
-                chunk_z_l95_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.025)))]
-                chunk_z_l68_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.160)))]
-                chunk_z_med_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.500)))]
-                chunk_z_u68_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.840)))]
-                chunk_z_u95_lowz = lowz_zgrid[map(argmin, eachrow(abs.(lowz_cpz .- 0.975)))]
-
-                # Lowz best-fit photometry
-                chunk_photobest_lowz = zeros(chunk_nobj, nband)
-                for j_local in 1:chunk_nobj
-                    chunk_zbest_lowz[j_local] <= 0 && continue
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest_lowz[j_local]))
-                    for k in 1:nband
-                        for t in 1:ntempl
-                            chunk_photobest_lowz[j_local, k] += templgrid[t, z_idx, k] * chunk_coeffsbest_lowz[j_local, t]
+                    # Lowz best-fit photometry
+                    if chunk_zbest_lowz[j] > 0
+                        z_idx = nearest_sorted_index(zgrid, chunk_zbest_lowz[j])
+                        for k in 1:nband
+                            val = 0.0
+                            for t in 1:ntempl
+                                val += templgrid[k, t, z_idx] * chunk_coeffsbest_lowz[j, t]
+                            end
+                            chunk_photobest_lowz[j, k] = val
                         end
                     end
                 end
-
+            end
+            # Build forced low-z result dict
+            if output_forced_lowz
                 chunk_forced_lowz = Dict(
                     "zbest" => chunk_zbest_lowz,
                     "chi2best" => chunk_chi2best_lowz,
@@ -985,34 +1148,33 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                 chunk_chi2grid = nothing
             end
 
-            # Calculate best-fit photometry for this chunk
+            # Calculate best-fit photometry and rest-frame magnitudes (threaded)
             chunk_photobest = zeros(chunk_nobj, nband)
-            for j_local in 1:chunk_nobj
-                if chunk_zbest[j_local] > 0  # Only for valid fits
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest[j_local]))
-                    for k in 1:nband
-                        chunk_photobest[j_local, k] = 0.0
-                        for t in 1:ntempl
-                            chunk_photobest[j_local, k] += templgrid[t, z_idx, k] * chunk_coeffsbest[j_local, t]
-                        end
-                    end
-                end
-            end
-            
-            # Compute rest-frame absolute magnitudes for this chunk
             chunk_restframe_mags = nothing
             if output_restframe_mags && restframe_templgrid !== nothing
-                nrf = 4
-                chunk_restframe_mags = fill(NaN, chunk_nobj, nrf)
-                for j_local in 1:chunk_nobj
-                    chunk_zbest[j_local] <= 0 && continue
-                    z_idx = argmin(abs.(zgrid .- chunk_zbest[j_local]))
+                chunk_restframe_mags = fill(NaN, chunk_nobj, 4)
+            end
+            Threads.@threads for j_local in 1:chunk_nobj
+                chunk_zbest[j_local] <= 0 && continue
+                z_idx = nearest_sorted_index(zgrid, chunk_zbest[j_local])
+
+                # Best-fit photometry
+                for k in 1:nband
+                    val = 0.0
+                    @inbounds for t in 1:ntempl
+                        val += templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
+                    end
+                    chunk_photobest[j_local, k] = val
+                end
+
+                # Rest-frame absolute magnitudes
+                if chunk_restframe_mags !== nothing
                     DM = distance_modulus(chunk_zbest[j_local], cosmo_H0, cosmo_Om)
                     kcorr = 2.5 * log10(1.0 + chunk_zbest[j_local])
-                    for k in 1:nrf
+                    for k in 1:4
                         f_rest = 0.0
-                        for t in 1:ntempl
-                            f_rest += restframe_templgrid[t, z_idx, k] * chunk_coeffsbest[j_local, t]
+                        @inbounds for t in 1:ntempl
+                            f_rest += restframe_templgrid[k, t, z_idx] * chunk_coeffsbest[j_local, t]
                         end
                         if f_rest > 0.0
                             chunk_restframe_mags[j_local, k] = -2.5 * log10(f_rest) + flux_zp - DM + kcorr
@@ -1020,9 +1182,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                     end
                 end
             end
-
             # Write chunk results to HDF5
-            write_chunk_results(work_file, chunk_start, chunk_end,
+            write_chunk_results(h5f, chunk_start, chunk_end,
                               chunk_IDs, chunk_zbest, chunk_chi2best, chunk_coeffsbest,
                               chunk_z_l95, chunk_z_l68, chunk_z_med, chunk_z_u68, chunk_z_u95,
                               chunk_photobest, bands, chunk_chi2grid, zgrid;
@@ -1030,33 +1191,23 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
                               pz_bins=chunk_pz_bins, pz_bin_centers=Sz_bc,
                               pz_cen=chunk_pz_cen, pz_zgtrzb2=chunk_pz_zgtrzb2,
                               restframe_mags=chunk_restframe_mags,
-                              forced_lowz=chunk_forced_lowz)
-            
-            # Progress is now updated per-object within the threaded tasks
-            objects_processed += chunk_nobj
+                              forced_lowz=chunk_forced_lowz,
+                              pz_grid=chunk_pz_grid)
+            end # with_spinner saving chunk
         end
-        
-        # Finish progress bar immediately after fitting loop completes
-        if interrupted[]
-            finish!(progress_bar, final_message="interrupted")
-        else
-            finish!(progress_bar)
-        end
-        
+        flush(h5f)
+        end # h5open
+
         # Generate template output if requested (after fitting is complete)
         if output_templ
-            println("📊 Generating template output...")
-            
-            # Use unified template grid builder for spectral mode
-            templgrid_spectral, _, wavelength_grid = build_template_grid(
-                templates, zgrid, param["fitting"]["igm_model"], param["fitting"];
-                output_type=:spectral,
-                add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c
-            )
-            
-            # Write template data to HDF5 work file
-            write_template_data(work_file, templgrid_spectral, wavelength_grid, zgrid, templates)
-            println("✅ Template output generated")
+            with_spinner("Generating template output") do
+                templgrid_spectral, _, wavelength_grid = build_template_grid(
+                    templates, zgrid, param["fitting"]["igm_model"], param["fitting"];
+                    output_type=:spectral,
+                    add_cgm=add_cgm, cgm_A=cgm_A, cgm_a=cgm_a, cgm_c=cgm_c
+                )
+                write_template_data(work_file, templgrid_spectral, wavelength_grid, zgrid, templates)
+            end
         end
         
         # Mark work file as complete
@@ -1069,8 +1220,11 @@ function fit_streaming(param::Dict, templgrid::Array{Float64,3}, template_error_
         if isa(e, InterruptException)
             interrupted[] = true
             println("\n⚠️ Fitting interrupted by user. Processing results for completed objects...")
-            finalize_hdf5_work_file(work_file)  # Mark as complete for resume
-            finish!(progress_bar, final_message="interrupted")
+            # Don't finalize — last_processed_object from completed chunks is already saved,
+            # so the next run can detect the incomplete file and offer to resume.
+            if chunk_progress !== nothing
+                finish!(chunk_progress, final_message="interrupted")
+            end
         else
             println("\n⚠️ Error during streaming fit: $e")
             println("💾 Partial results preserved in: $work_file")

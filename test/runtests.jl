@@ -53,7 +53,7 @@ using Test
     @testset "Spectroscopic redshift fixing (use_zspec)" begin
         nz_test, nband_test, ntempl_test = 5, 2, 1
         zgrid_test = collect(range(0.0, 2.0, length=nz_test))
-        templgrid_test = ones(ntempl_test, nz_test, nband_test)
+        templgrid_test = ones(Float32, nband_test, ntempl_test, nz_test)
         template_error_test = zeros(nz_test, nband_test)
         fnu_test = [1.0, 1.0]
         efnu_test = [0.1, 0.1]

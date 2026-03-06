@@ -18,6 +18,10 @@ const igmpath = @__DIR__() * "/igm_data/"
 const templatepath = @__DIR__() * "/templates/"
 const filterpath = @__DIR__() * "/filter_files/"
 
+# Filter caches to avoid repeated disk I/O
+const _filter_cache = Dict{String, Tuple{Vector{Float64}, Vector{Float64}}}()
+const _filter_directory_cache = Ref{Union{Nothing, Dict}}(nothing)
+
 # =============================================================================
 # Data Loading Functions (from main.jl)
 # =============================================================================
@@ -34,22 +38,19 @@ end
 
 function load_filters()
     """
-    Load the filters from the filter directory.
+    Load the filters from the filter directory (cached after first call).
     """
-    if !isdir(filterpath)
-        throw(LazyError("Filter directory $filterpath not found"))
+    if _filter_directory_cache[] === nothing
+        if !isdir(filterpath)
+            throw(LazyError("Filter directory $filterpath not found"))
+        end
+        _filter_directory_cache[] = TOML.parsefile(filterpath * "filter_directory.toml")
     end
-    return TOML.parsefile(filterpath * "filter_directory.toml")
+    return _filter_directory_cache[]
 end
 
 function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Float64}, Matrix{Float64}, Vector{String}}
-    """
-    Load the photometric data from the catalog.
-    
-    Returns (fnu, efnu, bands) where fnu and efnu are nobj×nband matrices.
-    """
-    IDs = read(cat[2], "ID")
-    nobj = length(IDs)
+    nobj = length(read(cat[2], "ID"))
 
     # Downselect to bands that are present in the catalog
     all_cols = FITSIO.colnames(cat[2])
@@ -63,12 +64,8 @@ function load_data(cat, bands::Vector{String}, translate::Dict)::Tuple{Matrix{Fl
     fnu = zeros(nobj, nband)
     efnu = zeros(nobj, nband)
     for (i, band) in enumerate(bands)
-        flux_col = translate[band]["flux"]
-        err_col = translate[band]["error"]
-        fnu_i = read(cat[2], flux_col)
-        efnu_i = read(cat[2], err_col)
-        fnu[:, i] = fnu_i
-        efnu[:, i] = efnu_i
+        fnu[:, i] = read(cat[2], translate[band]["flux"])
+        efnu[:, i] = read(cat[2], translate[band]["error"])
     end
     return fnu, efnu, bands
 end
@@ -94,28 +91,26 @@ end
 
 function get_filter(nickname::String)::Tuple{Vector{Float64}, Vector{Float64}}
     """
-    Get the filter transmission curve from the nickname.
-    
+    Get the filter transmission curve from the nickname (cached after first load).
+
     Returns (wavelength, transmission) vectors.
     """
+    if haskey(_filter_cache, nickname)
+        return _filter_cache[nickname]
+    end
 
     filter_directory = load_filters()
-    filter_nicknames = Dict{String, String}()
-    filter_names = sort(collect(keys(filter_directory)))
-
-    for key in filter_names
+    for key in keys(filter_directory)
         for n in filter_directory[key]["nicknames"]
-            filter_nicknames[n] = key
+            if n == nickname
+                filt = readdlm(filterpath * key)
+                result = (filt[:,1], filt[:,2])
+                _filter_cache[nickname] = result
+                return result
+            end
         end
     end
-
-    if haskey(filter_nicknames, nickname)
-        real_name = filter_nicknames[nickname]
-        filt = readdlm(filterpath * real_name)
-        return filt[:,1], filt[:,2]
-    else
-        throw(LazyError("Filter '$nickname' not found"))
-    end
+    throw(LazyError("Filter '$nickname' not found"))
 end
 
 function get_pivot_wavelengths(bands::Vector{String})::Vector{Float64}
@@ -368,9 +363,9 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
         g_meta["bands"] = bands
         g_meta["zgrid"] = zgrid
         g_meta["templates"] = templates
-        g_meta["last_processed_object"] = 0
-        g_meta["last_update_time"] = time()
-        g_meta["complete"] = false
+        attrs(g_meta)["last_processed_object"] = 0
+        attrs(g_meta)["last_update_time"] = time()
+        attrs(g_meta)["complete"] = false
         
         # Create results group with pre-allocated datasets
         g_results = create_group(file, "results")
@@ -416,11 +411,11 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
             g_pz = create_group(file, "pz")
             # Use chunking and compression for large chi2 grid
             chunk_size = min(1000, nobj)
-            create_dataset(g_pz, "chi2grid", Float32, (nobj, nz),
-                          chunk=(chunk_size, nz), compress=3)
+            create_dataset(g_pz, "chi2grid", Float32, (nz, nobj),
+                          chunk=(nz, chunk_size))
             # Store normalized P(z) alongside chi2grid for consistent output
-            create_dataset(g_pz, "pz", Float32, (nobj, nz),
-                          chunk=(chunk_size, nz), compress=3)
+            create_dataset(g_pz, "pz", Float32, (nz, nobj),
+                          chunk=(nz, chunk_size))
         end
         
         # Rest-frame absolute magnitudes
@@ -467,20 +462,20 @@ function check_resume_file(filename::String)
     if !isfile(filename)
         return (false, 0)
     end
-    
+
     try
         h5open(filename, "r") do file
             if !haskey(file, "metadata")
                 return (false, 0)
             end
-            
+
             meta = file["metadata"]
-            complete = read(meta, "complete")
-            if complete
-                return (false, 0)  # Already complete
+            last_obj = read_attribute(meta, "last_processed_object")
+
+            if last_obj <= 0
+                return (false, 0)  # No objects processed yet
             end
-            
-            last_obj = read(meta, "last_processed_object")
+
             return (true, last_obj)
         end
     catch
@@ -489,9 +484,132 @@ function check_resume_file(filename::String)
 end
 
 """
-    write_chunk_results(filename, chunk_start, chunk_end, ...)
+    write_chunk_results(file::HDF5.File, chunk_start, chunk_end, ...)
 
-Write a chunk of results to the HDF5 work file.
+Write a chunk of results to an open HDF5 file handle.
+"""
+function write_chunk_results(file::HDF5.File, chunk_start::Int, chunk_end::Int,
+                           IDs::Vector{<:Integer}, zbest::Vector{Float64},
+                           chi2best::Vector{Float64}, coeffsbest::Matrix{Float64},
+                           z_l95::Vector{Float64}, z_l68::Vector{Float64},
+                           z_med::Vector{Float64}, z_u68::Vector{Float64},
+                           z_u95::Vector{Float64}, photobest::Matrix{Float64},
+                           bands::Vector{String}, chi2grid::Union{Nothing,Matrix{Float32}}=nothing,
+                           zgrid::Union{Nothing,Vector{Float64}}=nothing;
+                           pz_gt::Union{Nothing,Matrix{Float32}}=nothing,
+                           Sz::Union{Nothing,Vector{Float64}}=nothing,
+                           z_integers::Union{Nothing,Vector{Int}}=nothing,
+                           pz_bins::Union{Nothing,Matrix{Float32}}=nothing,
+                           pz_bin_centers::Union{Nothing,Vector{Float64}}=nothing,
+                           pz_cen::Union{Nothing,Vector{Float32}}=nothing,
+                           pz_zgtrzb2::Union{Nothing,Vector{Float32}}=nothing,
+                           restframe_mags::Union{Nothing,Matrix{Float64}}=nothing,
+                           forced_lowz::Union{Nothing,Dict}=nothing,
+                           pz_grid::Union{Nothing,Matrix{Float32}}=nothing)
+
+    # Write results (convert IDs to Int32 to match dataset type)
+    file["results/ID"][chunk_start:chunk_end] = Int32.(IDs)
+    file["results/zbest"][chunk_start:chunk_end] = zbest
+    file["results/chi2best"][chunk_start:chunk_end] = chi2best
+    file["results/z_l95"][chunk_start:chunk_end] = z_l95
+    file["results/z_l68"][chunk_start:chunk_end] = z_l68
+    file["results/z_med"][chunk_start:chunk_end] = z_med
+    file["results/z_u68"][chunk_start:chunk_end] = z_u68
+    file["results/z_u95"][chunk_start:chunk_end] = z_u95
+    file["results/coeffs"][chunk_start:chunk_end, :] = coeffsbest
+
+    # Write photometry
+    for (i, band) in enumerate(bands)
+        file["photometry/$band"][chunk_start:chunk_end] = photobest[:, i]
+    end
+
+    # Write P(z) if provided
+    if chi2grid !== nothing && haskey(file, "pz/chi2grid")
+        file["pz/chi2grid"][:, chunk_start:chunk_end] = chi2grid
+
+        # Write pre-computed normalized P(z) if provided, otherwise compute it
+        if haskey(file, "pz/pz")
+            if pz_grid !== nothing
+                file["pz/pz"][:, chunk_start:chunk_end] = pz_grid
+            elseif zgrid !== nothing
+                pz_chunk = exp.(-0.5f0 .* chi2grid)
+                for col in 1:size(pz_chunk, 2)
+                    norm = trapz(zgrid, @view pz_chunk[:, col])
+                    if norm > 0
+                        pz_chunk[:, col] ./= norm
+                    end
+                end
+                file["pz/pz"][:, chunk_start:chunk_end] = pz_chunk
+            end
+        end
+    end
+
+    # Write integrated P(z) quantities
+    if pz_gt !== nothing && z_integers !== nothing
+        for (zi, Z) in enumerate(z_integers)
+            if haskey(file["results"], "pz_gt$(Z)")
+                file["results/pz_gt$(Z)"][chunk_start:chunk_end] = pz_gt[:, zi]
+            end
+        end
+    end
+    if Sz !== nothing && haskey(file["results"], "Sz")
+        file["results/Sz"][chunk_start:chunk_end] = Sz
+    end
+
+    # Write Pz bin probabilities
+    if pz_bins !== nothing && pz_bin_centers !== nothing
+        for (i, bc) in enumerate(pz_bin_centers)
+            key = "Pz$(Int(bc))"
+            if haskey(file["results"], key)
+                file["results/$key"][chunk_start:chunk_end] = pz_bins[:, i]
+            end
+        end
+    end
+    if pz_cen !== nothing && haskey(file["results"], "Pz_cen")
+        file["results/Pz_cen"][chunk_start:chunk_end] = pz_cen
+    end
+    if pz_zgtrzb2 !== nothing && haskey(file["results"], "Pz_zgtrzb2")
+        file["results/Pz_zgtrzb2"][chunk_start:chunk_end] = pz_zgtrzb2
+    end
+
+    # Write rest-frame absolute magnitudes
+    if restframe_mags !== nothing
+        for (k, mag_name) in enumerate(["M_UV", "M_U", "M_V", "M_J"])
+            if haskey(file["results"], mag_name)
+                file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
+            end
+        end
+    end
+
+    # Write forced low-z results
+    if forced_lowz !== nothing
+        if haskey(file["results"], "zbest_lowz")
+            file["results/zbest_lowz"][chunk_start:chunk_end] = forced_lowz["zbest"]
+            file["results/chi2best_lowz"][chunk_start:chunk_end] = forced_lowz["chi2best"]
+            file["results/delta_chi2"][chunk_start:chunk_end] = forced_lowz["delta_chi2"]
+            file["results/z_l95_lowz"][chunk_start:chunk_end] = forced_lowz["z_l95"]
+            file["results/z_l68_lowz"][chunk_start:chunk_end] = forced_lowz["z_l68"]
+            file["results/z_med_lowz"][chunk_start:chunk_end] = forced_lowz["z_med"]
+            file["results/z_u68_lowz"][chunk_start:chunk_end] = forced_lowz["z_u68"]
+            file["results/z_u95_lowz"][chunk_start:chunk_end] = forced_lowz["z_u95"]
+            file["results/coeffs_lowz"][chunk_start:chunk_end, :] = forced_lowz["coeffs"]
+            for (i, band) in enumerate(bands)
+                if haskey(file["photometry"], "$(band)_lowz")
+                    file["photometry/$(band)_lowz"][chunk_start:chunk_end] = forced_lowz["photobest"][:, i]
+                end
+            end
+        end
+    end
+
+    # Update metadata
+    attrs(file["metadata"])["last_processed_object"] = chunk_end
+    attrs(file["metadata"])["last_update_time"] = time()
+end
+
+"""
+    write_chunk_results(filename::String, chunk_start, chunk_end, ...)
+
+Convenience wrapper that opens the HDF5 file, writes, and flushes.
 """
 function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            IDs::Vector{<:Integer}, zbest::Vector{Float64},
@@ -509,132 +627,30 @@ function write_chunk_results(filename::String, chunk_start::Int, chunk_end::Int,
                            pz_cen::Union{Nothing,Vector{Float32}}=nothing,
                            pz_zgtrzb2::Union{Nothing,Vector{Float32}}=nothing,
                            restframe_mags::Union{Nothing,Matrix{Float64}}=nothing,
-                           forced_lowz::Union{Nothing,Dict}=nothing)
-    
+                           forced_lowz::Union{Nothing,Dict}=nothing,
+                           pz_grid::Union{Nothing,Matrix{Float32}}=nothing)
     try
         h5open(filename, "r+") do file
-            # Write results (convert IDs to Int32 to match dataset type)
-            file["results/ID"][chunk_start:chunk_end] = Int32.(IDs)
-            file["results/zbest"][chunk_start:chunk_end] = zbest
-            file["results/chi2best"][chunk_start:chunk_end] = chi2best
-            file["results/z_l95"][chunk_start:chunk_end] = z_l95
-            file["results/z_l68"][chunk_start:chunk_end] = z_l68
-            file["results/z_med"][chunk_start:chunk_end] = z_med
-            file["results/z_u68"][chunk_start:chunk_end] = z_u68
-            file["results/z_u95"][chunk_start:chunk_end] = z_u95
-            file["results/coeffs"][chunk_start:chunk_end, :] = coeffsbest
-            
-            # Write photometry
-            for (i, band) in enumerate(bands)
-                file["photometry/$band"][chunk_start:chunk_end] = photobest[:, i]
-            end
-            
-            # Write P(z) if provided
-            if chi2grid !== nothing && haskey(file, "pz/chi2grid")
-                file["pz/chi2grid"][chunk_start:chunk_end, :] = chi2grid
-
-                # Compute and store normalized P(z) per-chunk
-                if zgrid !== nothing && haskey(file, "pz/pz")
-                    pz_chunk = exp.(-0.5f0 .* chi2grid)
-                    # Normalize each row using trapezoidal integration
-                    for row in 1:size(pz_chunk, 1)
-                        norm = trapz(zgrid, @view pz_chunk[row, :])
-                        if norm > 0
-                            pz_chunk[row, :] ./= norm
-                        end
-                    end
-                    file["pz/pz"][chunk_start:chunk_end, :] = pz_chunk
-                end
-            end
-
-            # Write integrated P(z) quantities
-            if pz_gt !== nothing && z_integers !== nothing
-                for (zi, Z) in enumerate(z_integers)
-                    if haskey(file["results"], "pz_gt$(Z)")
-                        file["results/pz_gt$(Z)"][chunk_start:chunk_end] = pz_gt[:, zi]
-                    end
-                end
-            end
-            if Sz !== nothing && haskey(file["results"], "Sz")
-                file["results/Sz"][chunk_start:chunk_end] = Sz
-            end
-
-            # Write Pz bin probabilities
-            if pz_bins !== nothing && pz_bin_centers !== nothing
-                for (i, bc) in enumerate(pz_bin_centers)
-                    key = "Pz$(Int(bc))"
-                    if haskey(file["results"], key)
-                        file["results/$key"][chunk_start:chunk_end] = pz_bins[:, i]
-                    end
-                end
-            end
-            if pz_cen !== nothing && haskey(file["results"], "Pz_cen")
-                file["results/Pz_cen"][chunk_start:chunk_end] = pz_cen
-            end
-            if pz_zgtrzb2 !== nothing && haskey(file["results"], "Pz_zgtrzb2")
-                file["results/Pz_zgtrzb2"][chunk_start:chunk_end] = pz_zgtrzb2
-            end
-
-            # Write rest-frame absolute magnitudes
-            if restframe_mags !== nothing
-                for (k, mag_name) in enumerate(["M_UV", "M_U", "M_V", "M_J"])
-                    if haskey(file["results"], mag_name)
-                        file["results/$mag_name"][chunk_start:chunk_end] = restframe_mags[:, k]
-                    end
-                end
-            end
-
-            # Write forced low-z results
-            if forced_lowz !== nothing
-                if haskey(file["results"], "zbest_lowz")
-                    file["results/zbest_lowz"][chunk_start:chunk_end] = forced_lowz["zbest"]
-                    file["results/chi2best_lowz"][chunk_start:chunk_end] = forced_lowz["chi2best"]
-                    file["results/delta_chi2"][chunk_start:chunk_end] = forced_lowz["delta_chi2"]
-                    file["results/z_l95_lowz"][chunk_start:chunk_end] = forced_lowz["z_l95"]
-                    file["results/z_l68_lowz"][chunk_start:chunk_end] = forced_lowz["z_l68"]
-                    file["results/z_med_lowz"][chunk_start:chunk_end] = forced_lowz["z_med"]
-                    file["results/z_u68_lowz"][chunk_start:chunk_end] = forced_lowz["z_u68"]
-                    file["results/z_u95_lowz"][chunk_start:chunk_end] = forced_lowz["z_u95"]
-                    file["results/coeffs_lowz"][chunk_start:chunk_end, :] = forced_lowz["coeffs"]
-                    for (i, band) in enumerate(bands)
-                        if haskey(file["photometry"], "$(band)_lowz")
-                            file["photometry/$(band)_lowz"][chunk_start:chunk_end] = forced_lowz["photobest"][:, i]
-                        end
-                    end
-                end
-            end
-
-            # Update metadata (handle existing vs new datasets)
-            meta_group = file["metadata"]
-            
-            # Update existing dataset
-            if haskey(meta_group, "last_processed_object")
-                delete_object(meta_group, "last_processed_object")
-            end
-            meta_group["last_processed_object"] = chunk_end
-            
-            # Create or update last_update_time
-            if haskey(meta_group, "last_update_time")
-                delete_object(meta_group, "last_update_time")
-            end
-            meta_group["last_update_time"] = time()
-            
-            # Force flush to disk
+            write_chunk_results(file, chunk_start, chunk_end,
+                              IDs, zbest, chi2best, coeffsbest,
+                              z_l95, z_l68, z_med, z_u68, z_u95,
+                              photobest, bands, chi2grid, zgrid;
+                              pz_gt=pz_gt, Sz=Sz, z_integers=z_integers,
+                              pz_bins=pz_bins, pz_bin_centers=pz_bin_centers,
+                              pz_cen=pz_cen, pz_zgtrzb2=pz_zgtrzb2,
+                              restframe_mags=restframe_mags, forced_lowz=forced_lowz,
+                              pz_grid=pz_grid)
             flush(file)
         end
     catch e
-        # Provide safe error message without printing large arrays
-        println("❌ Error writing chunk results to $filename:")
+        println("Error writing chunk results to $filename:")
         println("   Chunk: objects $chunk_start to $chunk_end")
         println("   Array sizes: IDs=$(length(IDs)), zbest=$(length(zbest))")
-        
-        # Safe error message handling
         error_msg = if hasfield(typeof(e), :msg)
             e.msg
         else
             string(e)
         end
-        
         println("   Error: $(typeof(e)) - $error_msg")
         rethrow(e)
     end
@@ -644,26 +660,22 @@ end
     write_template_data(work_file::String, templgrid_spectral, wavelength_grid, zgrid, templates)
 
 Write template spectral data to HDF5 work file.
-templgrid_spectral has shape (ntempl, nz, nwav) and is converted to (nwav, nz) per template for storage.
+templgrid_spectral has shape (nwav, ntempl, nz). Per template, slice [:, i, :] gives (nwav, nz).
 """
 function write_template_data(work_file::String, templgrid_spectral, wavelength_grid, zgrid, templates)
     h5open(work_file, "r+") do file
         g_templates = file["templates"]
-        
+
         # Store wavelength grid (common to all templates)
         g_templates["wavelength"] = wavelength_grid
-        
+
         # Store each template's spectral data
-        # templgrid_spectral[i,:,:] has shape (nz, nwav)
-        # We need to transpose to (nwav, nz) to match original format
+        # templgrid_spectral[:, i, :] has shape (nwav, nz) — already correct orientation
         for (i, template) in enumerate(templates)
             template_name = basename(template)
             template_name = splitext(template_name)[1]  # Remove extension regardless of type
-            
-            # Convert from (nz, nwav) to (nwav, nz) to match original format
-            template_data = transpose(templgrid_spectral[i, :, :])
-            # Convert transpose to regular array for HDF5 compatibility
-            g_templates[template_name] = collect(template_data)
+
+            g_templates[template_name] = templgrid_spectral[:, i, :]
         end
     end
 end
@@ -676,18 +688,8 @@ Mark HDF5 work file as complete.
 function finalize_hdf5_work_file(filename::String)
     h5open(filename, "r+") do file
         meta_group = file["metadata"]
-        
-        # Update complete status
-        if haskey(meta_group, "complete")
-            delete_object(meta_group, "complete")
-        end
-        meta_group["complete"] = true
-        
-        # Update end time
-        if haskey(meta_group, "end_time")
-            delete_object(meta_group, "end_time")
-        end
-        meta_group["end_time"] = time()
+        attrs(meta_group)["complete"] = true
+        attrs(meta_group)["end_time"] = time()
     end
 end
 
@@ -804,14 +806,19 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
         # Write P(z) if it exists
         if haskey(h5f, "pz/chi2grid")
             zgrid = read(meta, "zgrid")
-            chi2grid = read(h5f["pz/chi2grid"])
+            chi2grid = read(h5f["pz/chi2grid"])  # (nz, nobj)
 
-            # Convert chi2 to P(z)
+            # Convert chi2 to P(z) and normalize each column (object)
             pz = exp.(-0.5 * chi2grid)
-            pz = pz ./ trapz(zgrid, pz)
+            for col in 1:size(pz, 2)
+                norm = trapz(zgrid, @view pz[:, col])
+                if norm > 0
+                    pz[:, col] ./= norm
+                end
+            end
 
-            # Format for FITS
-            temp_pz = vcat(transpose(zgrid), pz)
+            # Format for FITS: (nobj+1, nz) with zgrid as first row
+            temp_pz = vcat(transpose(zgrid), transpose(pz))
             temp_IDs = vcat([-1], IDs)
 
             nz = length(zgrid)
@@ -1044,11 +1051,11 @@ function convert_hdf5_to_fits(hdf5_file::String, fits_file::String; chunk_size::
                 for cs in 1:chunk_size:nobj
                     ce = min(cs + chunk_size - 1, nobj)
                     ids_chunk = Int64.(h5f["results/ID"][cs:ce])
-                    pz_chunk = Float32.(h5f["pz/pz"][cs:ce, :])
+                    pz_chunk = Float32.(h5f["pz/pz"][:, cs:ce])  # (nz, chunk_nobj)
 
                     # Write to rows cs+1:ce+1 (offset by 1 for sentinel row)
                     CFITSIO.fits_write_col(ff, 1, cs + 1, 1, ids_chunk)
-                    CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(permutedims(pz_chunk)))
+                    CFITSIO.fits_write_col(ff, 2, cs + 1, 1, vec(pz_chunk))
                 end
             end
 
@@ -1116,12 +1123,13 @@ function get_chunk_size_for_memory_target(nobj::Int, nz::Int, target_memory_gb::
 end
 
 """
-    prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)
+    prompt_complete_run(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)
 
 Prompt user when a run is already complete.
 Returns: action choice ("complete", "overwrite", "keep")
+When auto_yes=true, automatically returns "complete" without prompting.
 """
-function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)::String
+function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)::String
     # Get file modification time
     mtime = stat(work_file).mtime
     time_ago = time() - mtime
@@ -1132,17 +1140,23 @@ function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)::Strin
     else
         "$(round(Int, time_ago / 86400)) days ago"
     end
-    
+
     println("🧠 Found complete run (100.0% complete, $(format_number(last_obj))/$(format_number(nobj)) objects)")
     println("   Last updated: $time_str")
+
+    if auto_yes
+        println("   Auto-completing (--yes)")
+        return "complete"
+    end
+
     println("   Options:")
     println("   [C]omplete - Mark as complete and create final output")
     println("   [O]verwrite - Delete work file and start fresh")
     println("   [K]eep - Keep work file and exit")
     print("   Choice [C/o/k]: ")
-    
+
     response = lowercase(strip(readline()))
-    
+
     if response == "o"
         return "overwrite"
     elseif response == "k"
@@ -1153,20 +1167,21 @@ function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)::Strin
 end
 
 """
-    prompt_resume(work_file::String, last_obj::Int, nobj::Int)
+    prompt_resume(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)
 
 Prompt user whether to resume from checkpoint.
 Returns: (action, should_resume) where action is "resume", "overwrite", "complete", or "keep"
+When auto_yes=true, automatically resumes incomplete runs and completes finished runs.
 """
-function prompt_resume(work_file::String, last_obj::Int, nobj::Int)::Tuple{String, Bool}
+function prompt_resume(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)::Tuple{String, Bool}
     # Check if the run is actually complete
     if last_obj >= nobj
-        action = prompt_complete_run(work_file, last_obj, nobj)
+        action = prompt_complete_run(work_file, last_obj, nobj; auto_yes=auto_yes)
         return (action, false)  # No resuming needed for complete runs
     end
-    
+
     percent_complete = round(100 * last_obj / nobj, digits=1)
-    
+
     # Get file modification time
     mtime = stat(work_file).mtime
     time_ago = time() - mtime
@@ -1177,11 +1192,17 @@ function prompt_resume(work_file::String, last_obj::Int, nobj::Int)::Tuple{Strin
     else
         "$(round(Int, time_ago / 86400)) days ago"
     end
-    
+
     println("🧠 Found incomplete run ($percent_complete% complete, $(format_number(last_obj))/$(format_number(nobj)) objects)")
     println("   Last updated: $time_str")
+
+    if auto_yes
+        println("   Auto-resuming (--yes)")
+        return ("resume", true)
+    end
+
     print("   Resume from object $(last_obj + 1)? [Y/n]: ")
-    
+
     response = readline()
     if response == "" || lowercase(response) == "y"
         return ("resume", true)
@@ -1220,6 +1241,11 @@ function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64},
     template_names = sort([basename(t) for t in templates])
     sorted_bands = sort(bands)
 
+    # Include a code version fingerprint so cache is invalidated when
+    # template_grid.jl or io.jl change (prevents loading stale grids)
+    code_files = [joinpath(@__DIR__, "template_grid.jl"), joinpath(@__DIR__, "io.jl")]
+    code_fingerprint = string(sum(stat(f).mtime for f in code_files if isfile(f)))
+
     # Create a string representation of all parameters
     params_str = join([
         join(template_names, ","),
@@ -1229,7 +1255,8 @@ function generate_cache_key(templates::Vector{String}, zgrid::Vector{Float64},
         template_error,
         string(template_error_scale),
         string(add_cgm),
-        string(cgm_A), string(cgm_a), string(cgm_c)
+        string(cgm_A), string(cgm_a), string(cgm_c),
+        code_fingerprint
     ], "_")
     
     # Generate hash and take first 8 characters for readability
@@ -1255,7 +1282,7 @@ end
 """
 Save template grid and error grid to cache
 """
-function save_template_cache(templgrid::Array{Float64,3}, template_error_grid::Matrix{Float64},
+function save_template_cache(templgrid::Array{Float32,3}, template_error_grid::Matrix{Float64},
                             metadata::Dict, cache_key::String)
     try
         ensure_cache_dir()
@@ -1300,7 +1327,7 @@ end
 """
 Load template grid from cache if it exists
 """
-function load_template_cache(cache_key::String)::Union{Tuple{Array{Float64,3}, Matrix{Float64}}, Nothing}
+function load_template_cache(cache_key::String)::Union{Tuple{Array{Float32,3}, Matrix{Float64}}, Nothing}
     try
         filename = get_cache_filename(cache_key)
         
@@ -1309,8 +1336,14 @@ function load_template_cache(cache_key::String)::Union{Tuple{Array{Float64,3}, M
         end
         
         h5open(filename, "r") do file
-            templgrid = read(file, "templgrid")
+            templgrid = Float32.(read(file, "templgrid"))
             template_error_grid = read(file, "template_error_grid")
+            # Validate shape: expected (nband, ntempl, nz) where dim1 == nband
+            nband_cached = size(template_error_grid, 2)
+            if size(templgrid, 1) != nband_cached
+                @warn "Cached template grid has incompatible shape $(size(templgrid)), rebuilding."
+                return nothing
+            end
             return (templgrid, template_error_grid)
         end
         

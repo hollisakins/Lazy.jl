@@ -147,7 +147,7 @@
         'Larson22/binc100z001age6_cloudy.dat',
         'Larson22/binc100z001age65_cloudy.dat',
         'Larson22/binc100z001age7_cloudy.dat',
-        'misc/lrd.dat',
+        'misc/LRDz9.dat',
     ]
     attribution = "fsps, Larson et al. (2022), LRD"
 
@@ -169,7 +169,7 @@
         'Larson22/binc100z001age65_cloudy.dat',
         'Larson22/binc100z001age7_cloudy.dat',
         'misc/schrodinger.dat',
-        'misc/lrd.dat',
+        'misc/LRDz9.dat',
     ]
     attribution = "fsps, Larson et al. (2022), schrodinger, LRD"
 
@@ -210,7 +210,7 @@
         'sfhz/corr_sfhz_13_bin0_av0.50.fits',
         'sfhz/corr_sfhz_13_bin0_av0.25.fits',
         'sfhz/corr_sfhz_13_bin0_av0.01.fits',
-        'misc/lrd.dat',
+        'misc/LRDz9.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, LRD"
 
@@ -230,7 +230,7 @@
         'sfhz/corr_sfhz_13_bin0_av0.25.fits',
         'sfhz/corr_sfhz_13_bin0_av0.01.fits',
         'misc/schrodinger.dat',
-        'misc/lrd.dat',
+        'misc/LRDz9.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, schrodinger, LRD"
 
@@ -259,7 +259,7 @@
         'Larson22/binc100z001age65.dat',
         'Larson22/binc100z001age7_cloudy.dat',
         'Larson22/binc100z001age7.dat',
-        'misc/lrd.dat',
+        'misc/LRDz9.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), LRD"
 
@@ -285,7 +285,7 @@
         'Larson22/binc100z001age7_cloudy.dat',
         'Larson22/binc100z001age7.dat',
         'misc/schrodinger.dat',
-        'misc/lrd.dat',
+        'misc/LRDz9.dat',
     ]
     attribution = "eazy, fsps, Gabe Brammer, Larson et al. (2022), schrodinger, LRD"
 

@@ -21,6 +21,7 @@ function print_help(io, cmd::String = "main")
         println("")
         println("  -p, --param     Path to the parameter file")
         println("  -t, -- threads  Number of threads to use")
+        println("  -y, --yes       Non-interactive mode (auto-resume, no prompts)")
     elseif cmd == "list-templates"
         println("usage: lazy list-templates")
     end
@@ -78,21 +79,31 @@ function main(argv::Vector{String})
                 print_help(io, "fit")
                 return 0
             end
-        
-            y = popfirst!(argv)
 
-            if y == "-p" || y == "--param"
-                if length(argv) < 1
-                    throw(LazyError("expected parameter file argument after `-p`"))
+            param = nothing
+            auto_yes = false
+
+            while length(argv) > 0
+                y = popfirst!(argv)
+                if y == "-p" || y == "--param"
+                    if length(argv) < 1
+                        throw(LazyError("expected parameter file argument after `-p`"))
+                    end
+                    param = popfirst!(argv)
+                elseif y == "-y" || y == "--yes"
+                    auto_yes = true
+                elseif y == "-h" || y == "--help"
+                    print_help(io, "fit")
+                    return 0
+                else
+                    throw(LazyError("unrecognized argument: $y"))
                 end
-                param = popfirst!(argv)
-                return fit(param)
-            elseif y == "-h" || y == "--help"
-                print_help(io, "fit")
-                return 0
-            else
-                throw(LazyError("unrecognized argument: $y"))
             end
+
+            if param === nothing
+                throw(LazyError("parameter file not specified. Use -p <param_file>"))
+            end
+            return fit(param; auto_yes=auto_yes)
 
 
         elseif x == "list-templates"
