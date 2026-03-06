@@ -26,11 +26,6 @@ makedocs(;
     ],
 )
 
-# Create a root index.html redirect to stable/
-open(joinpath(@__DIR__, "build", "index.html"), "w") do io
-    write(io, """<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0; url=stable/"></head><body>Redirecting to <a href="stable/">stable/</a></body></html>""")
-end
-
 DocumenterVitepress.deploydocs(;
     repo = "github.com/hollisakins/Lazy.jl",
     push_preview = true,
