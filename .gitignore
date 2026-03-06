@@ -10,3 +10,9 @@ src/cache/
 # Test and temporary files
 test_*.toml
 param.toml
+
+# Documentation build
+docs/build/
+docs/Manifest.toml
+docs/node_modules/
+docs/package-lock.json

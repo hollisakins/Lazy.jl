@@ -1,0 +1,219 @@
+/* Customize default theme styling by overriding CSS variables:
+https://github.com/vuejs/vitepress/blob/main/src/client/theme-default/styles/vars.css */
+
+.VPHero .clip {
+  white-space: pre;
+  max-width: 600px;
+}
+
+/* Fonts */
+@font-face {
+  font-family: JuliaMono-Regular;
+  src: url("https://cdn.jsdelivr.net/gh/cormullion/juliamono/webfonts/JuliaMono-Regular.woff2");
+}
+
+:root {
+  scroll-behavior: smooth;
+  --vp-font-family-base: "Barlow", "Inter var experimental", "Inter var",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+    Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+  --vp-font-family-mono: JuliaMono-Regular, monospace;
+}
+
+.mono-no-substitutions {
+  font-family: "JuliaMono-Regular", monospace;
+  font-feature-settings: "calt" off;
+}
+
+pre, code {
+  font-family: "JuliaMono-Regular", monospace;
+  font-feature-settings: "calt" off;
+}
+
+/* Colors */
+:root {
+  --julia-blue: #4063D8;
+  --julia-purple: #9558B2;
+  --julia-red: #CB3C33;
+  --julia-green: #389826;
+
+  --vp-c-brand: #4063D8;
+  --vp-c-brand-1: #4063D8;
+  --vp-c-brand-2: #5a7be8;
+  --vp-c-brand-3: #3050c0;
+  --vp-c-brand-light: #4063D8;
+  --vp-c-brand-dark: #5a7be8;
+
+  --vp-tip-bg: rgb(254, 254, 254);
+  --vp-custom-block-tip-border: var(--vp-c-brand-light);
+  --vp-custom-block-tip-bg: var(--vp-tip-bg);
+}
+
+/* Component: Button */
+:root {
+  --vp-button-brand-border: var(--vp-c-brand);
+  --vp-button-brand-bg: var(--vp-c-brand-light);
+  --vp-button-brand-hover-border: var(--julia-purple);
+  --vp-button-brand-hover-bg: var(--julia-purple);
+}
+
+/* Component: Home */
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(
+    120deg,
+    #4063D8 30%,
+    #9558B2
+  );
+
+  --vp-home-hero-image-background-image: linear-gradient(
+    -145deg,
+    #4063D880 30%,
+    #38982680 30%,
+    #CB3C3380
+  );
+  --vp-home-hero-image-filter: blur(40px);
+}
+
+:root.dark {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(
+    120deg,
+    #5a7be8 15%,
+    #b07cd4
+  );
+  --vp-home-hero-image-background-image: linear-gradient(
+    -45deg,
+    #4063D880 30%,
+    #9558B280,
+    #1e1e1e80 30%
+  );
+  --vp-home-hero-image-filter: blur(56px);
+}
+
+:root.dark {
+  --vp-custom-block-tip-border: var(--vp-c-brand-dark);
+  --vp-custom-block-tip-text: #c1c1c1;
+  --vp-custom-block-tip-bg: #242424;
+}
+
+.dark {
+  --vp-c-brand: #5a7be8;
+  --vp-button-brand-border: #5a7be8;
+  --vp-button-brand-bg: #4063D8;
+  --vp-c-brand-1: #5a7be8;
+  --vp-c-brand-2: #7b95f0;
+  --vp-c-brand-3: #4063D8;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --vp-home-hero-image-filter: blur(56px);
+  }
+}
+
+@media (min-width: 960px) {
+  :root {
+    --vp-home-hero-image-filter: blur(72px);
+  }
+}
+
+/* Component: MathJax */
+.mjx-scroll-wrapper {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+mjx-container {
+  display: inline-block;
+  padding: 0.5rem 0;
+  margin: auto 2px -2px;
+  overflow: visible !important;
+  text-align: left;
+}
+
+mjx-container > svg {
+  display: inline-block;
+  height: auto;
+}
+
+mjx-container svg path {
+  fill: currentColor !important;
+  stroke: currentColor !important;
+}
+
+/* Julia REPL prompt syntax highlighting */
+.vp-doc .shiki .repl-prompt {
+  opacity: 1.0;
+  user-select: none;
+}
+
+:root:not(.dark) .vp-doc .shiki .repl-prompt-julia {
+  color: var(--julia-green);
+}
+
+:root:not(.dark) .vp-doc .shiki .repl-prompt-pkg {
+  color: var(--julia-blue);
+}
+
+.dark .vp-doc .shiki .repl-prompt-julia {
+  color: #42d392;
+}
+
+.dark .vp-doc .shiki .repl-prompt-pkg {
+  color: #5fd7ff;
+}
+
+/* Sidebar Drawer Toggle */
+@media (min-width: 960px) {
+  .VPSidebar {
+    transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease;
+  }
+
+  .VPContent.has-sidebar {
+    transition: padding-left 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                padding-right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .VPNavBar.has-sidebar .content {
+    transition: padding-left 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  }
+
+  .VPNavBar.has-sidebar .divider {
+    transition: padding-left 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  }
+
+  .VPNavBar.has-sidebar .title {
+    transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                padding 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease !important;
+  }
+
+  html.sidebar-drawer-collapsed {
+    --vp-sidebar-width: 0px !important;
+  }
+
+  html.sidebar-drawer-collapsed .VPSidebar {
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar .title,
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar > .wrapper > .container > .title {
+    width: 0 !important;
+    overflow: hidden;
+    opacity: 0;
+    padding: 0 !important;
+    pointer-events: none;
+  }
+
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar .content,
+  html.sidebar-drawer-collapsed .VPNavBar.has-sidebar > .wrapper > .container > .content {
+    padding-left: 8px !important;
+  }
+}
