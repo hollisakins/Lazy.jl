@@ -462,20 +462,20 @@ function check_resume_file(filename::String)
     if !isfile(filename)
         return (false, 0)
     end
-    
+
     try
         h5open(filename, "r") do file
             if !haskey(file, "metadata")
                 return (false, 0)
             end
-            
+
             meta = file["metadata"]
-            complete = read_attribute(meta, "complete")
-            if complete
-                return (false, 0)  # Already complete
+            last_obj = read_attribute(meta, "last_processed_object")
+
+            if last_obj <= 0
+                return (false, 0)  # No objects processed yet
             end
 
-            last_obj = read_attribute(meta, "last_processed_object")
             return (true, last_obj)
         end
     catch
@@ -1123,12 +1123,13 @@ function get_chunk_size_for_memory_target(nobj::Int, nz::Int, target_memory_gb::
 end
 
 """
-    prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)
+    prompt_complete_run(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)
 
 Prompt user when a run is already complete.
 Returns: action choice ("complete", "overwrite", "keep")
+When auto_yes=true, automatically returns "complete" without prompting.
 """
-function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)::String
+function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)::String
     # Get file modification time
     mtime = stat(work_file).mtime
     time_ago = time() - mtime
@@ -1139,17 +1140,23 @@ function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)::Strin
     else
         "$(round(Int, time_ago / 86400)) days ago"
     end
-    
+
     println("🧠 Found complete run (100.0% complete, $(format_number(last_obj))/$(format_number(nobj)) objects)")
     println("   Last updated: $time_str")
+
+    if auto_yes
+        println("   Auto-completing (--yes)")
+        return "complete"
+    end
+
     println("   Options:")
     println("   [C]omplete - Mark as complete and create final output")
     println("   [O]verwrite - Delete work file and start fresh")
     println("   [K]eep - Keep work file and exit")
     print("   Choice [C/o/k]: ")
-    
+
     response = lowercase(strip(readline()))
-    
+
     if response == "o"
         return "overwrite"
     elseif response == "k"
@@ -1160,20 +1167,21 @@ function prompt_complete_run(work_file::String, last_obj::Int, nobj::Int)::Strin
 end
 
 """
-    prompt_resume(work_file::String, last_obj::Int, nobj::Int)
+    prompt_resume(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)
 
 Prompt user whether to resume from checkpoint.
 Returns: (action, should_resume) where action is "resume", "overwrite", "complete", or "keep"
+When auto_yes=true, automatically resumes incomplete runs and completes finished runs.
 """
-function prompt_resume(work_file::String, last_obj::Int, nobj::Int)::Tuple{String, Bool}
+function prompt_resume(work_file::String, last_obj::Int, nobj::Int; auto_yes::Bool=false)::Tuple{String, Bool}
     # Check if the run is actually complete
     if last_obj >= nobj
-        action = prompt_complete_run(work_file, last_obj, nobj)
+        action = prompt_complete_run(work_file, last_obj, nobj; auto_yes=auto_yes)
         return (action, false)  # No resuming needed for complete runs
     end
-    
+
     percent_complete = round(100 * last_obj / nobj, digits=1)
-    
+
     # Get file modification time
     mtime = stat(work_file).mtime
     time_ago = time() - mtime
@@ -1184,11 +1192,17 @@ function prompt_resume(work_file::String, last_obj::Int, nobj::Int)::Tuple{Strin
     else
         "$(round(Int, time_ago / 86400)) days ago"
     end
-    
+
     println("🧠 Found incomplete run ($percent_complete% complete, $(format_number(last_obj))/$(format_number(nobj)) objects)")
     println("   Last updated: $time_str")
+
+    if auto_yes
+        println("   Auto-resuming (--yes)")
+        return ("resume", true)
+    end
+
     print("   Resume from object $(last_obj + 1)? [Y/n]: ")
-    
+
     response = readline()
     if response == "" || lowercase(response) == "y"
         return ("resume", true)

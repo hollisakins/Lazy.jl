@@ -342,7 +342,7 @@ function finalize_output(work_file::String, output_file::String, output_format::
     end
 end
 
-function fit(param)
+function fit(param; auto_yes::Bool=false)
 
     # Load in TOML parameter file
     if !isfile(param)
@@ -719,7 +719,8 @@ function fit(param)
                        restframe_templgrid=restframe_templgrid,
                        flux_zp=flux_zp, cosmo_H0=cosmo_H0, cosmo_Om=cosmo_Om,
                        output_forced_lowz=output_forced_lowz,
-                       forced_lowz_zmax=forced_lowz_zmax)
+                       forced_lowz_zmax=forced_lowz_zmax,
+                       auto_yes=auto_yes)
 end
 
 """
@@ -746,7 +747,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                       output_restframe_mags::Bool=false,
                       restframe_templgrid::Union{Nothing,Array{Float64,3}}=nothing,
                       flux_zp::Float64=0.0, cosmo_H0::Float64=70.0, cosmo_Om::Float64=0.3,
-                      output_forced_lowz::Bool=false, forced_lowz_zmax::Float64=0.0)
+                      output_forced_lowz::Bool=false, forced_lowz_zmax::Float64=0.0,
+                      auto_yes::Bool=false)
     
     # CGM params (read from fitting section)
     fitting = param["fitting"]
@@ -763,7 +765,7 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
     start_obj = 1
     
     if can_resume
-        action, should_resume = prompt_resume(work_file, last_obj, nobj)
+        action, should_resume = prompt_resume(work_file, last_obj, nobj; auto_yes=auto_yes)
         
         if action == "resume" && should_resume
             start_obj = last_obj + 1
@@ -1218,7 +1220,8 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
         if isa(e, InterruptException)
             interrupted[] = true
             println("\n⚠️ Fitting interrupted by user. Processing results for completed objects...")
-            finalize_hdf5_work_file(work_file)  # Mark as complete for resume
+            # Don't finalize — last_processed_object from completed chunks is already saved,
+            # so the next run can detect the incomplete file and offer to resume.
             if chunk_progress !== nothing
                 finish!(chunk_progress, final_message="interrupted")
             end
