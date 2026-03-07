@@ -405,6 +405,8 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
         create_dataset(g_results, "Pz_cen", Float32, (nobj,))
         create_dataset(g_results, "Pz_zgtrzb2", Float32, (nobj,))
 
+        output_forced_lowz = get(param["io"], "output_forced_lowz", false)
+
         # Optional full P(z) grid with compression
         output_pz = get(param["io"], "output_pz", false)
         if output_pz
@@ -434,7 +436,6 @@ function create_hdf5_work_file(filename::String, param::Dict, nobj::Int, nz::Int
         end
 
         # Forced low-z fit
-        output_forced_lowz = get(param["io"], "output_forced_lowz", false)
         if output_forced_lowz
             create_dataset(g_results, "zbest_lowz", Float64, (nobj,))
             create_dataset(g_results, "chi2best_lowz", Float64, (nobj,))
