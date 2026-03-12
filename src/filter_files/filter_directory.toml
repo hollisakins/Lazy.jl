@@ -376,4 +376,73 @@ description = '2MASS J for rest-frame M_J'
 nicknames = ['rf_j']
 wav_units = 'angstrom'
 
+['roman/wfi/f062']
+description = 'Roman WFI F062 effective area from SVO filter profile service'
+nicknames = ['f062', 'F062', 'roman_f062', 'roman-f062', 'Roman_F062', 'Roman-F062', 'roman_r', 'roman_R', 'R062', 'r062']
+wav_units = 'angstrom'
+
+['roman/wfi/f087']
+description = 'Roman WFI F087 effective area from SVO filter profile service'
+nicknames = ['f087', 'F087', 'roman_f087', 'roman-f087', 'Roman_F087', 'Roman-F087', 'roman_z', 'roman_Z', 'Z087', 'z087']
+wav_units = 'angstrom'
+
+['roman/wfi/f106']
+description = 'Roman WFI F106 effective area from SVO filter profile service'
+nicknames = ['f106', 'F106', 'roman_f106', 'roman-f106', 'Roman_F106', 'Roman-F106', 'roman_y', 'roman_Y', 'Y106', 'y106']
+wav_units = 'angstrom'
+
+['roman/wfi/f129']
+description = 'Roman WFI F129 effective area from SVO filter profile service'
+nicknames = ['f129', 'F129', 'roman_f129', 'roman-f129', 'Roman_F129', 'Roman-F129', 'roman_j', 'roman_J', 'J129', 'j129']
+wav_units = 'angstrom'
+
+['roman/wfi/f146']
+description = 'Roman WFI F146 (wide) effective area from SVO filter profile service'
+nicknames = ['f146', 'F146', 'roman_f146', 'roman-f146', 'Roman_F146', 'Roman-F146', 'roman_wide']
+wav_units = 'angstrom'
+
+['roman/wfi/f158']
+description = 'Roman WFI F158 effective area from SVO filter profile service'
+nicknames = ['f158', 'F158', 'roman_f158', 'roman-f158', 'Roman_F158', 'Roman-F158', 'roman_h', 'roman_H', 'H158', 'h158']
+wav_units = 'angstrom'
+
+['roman/wfi/f184']
+description = 'Roman WFI F184 effective area from SVO filter profile service'
+nicknames = ['f184', 'F184', 'roman_f184', 'roman-f184', 'Roman_F184', 'Roman-F184', 'roman_hl', 'roman_Hl', 'roman_HL', 'hl', 'HL']
+wav_units = 'angstrom'
+
+['roman/wfi/f213']
+description = 'Roman WFI F213 effective area from SVO filter profile service'
+nicknames = ['f213', 'F213', 'roman_f213', 'roman-f213', 'Roman_F213', 'Roman-F213', 'roman_k']
+wav_units = 'angstrom'
+
+['rubin/lsst/u']
+description = 'Rubin Observatory LSST u band'
+nicknames = ['lsst_u', 'LSST_u', 'rubin_u', 'Rubin_u', 'lsst-u', 'LSST-u', 'rubin-u', 'Rubin-u']
+wav_units = 'angstrom'
+
+['rubin/lsst/g']
+description = 'Rubin Observatory LSST g band'
+nicknames = ['lsst_g', 'LSST_g', 'rubin_g', 'Rubin_g', 'lsst-g', 'LSST-g', 'rubin-g', 'Rubin-g']
+wav_units = 'angstrom'
+
+['rubin/lsst/r']
+description = 'Rubin Observatory LSST r band'
+nicknames = ['lsst_r', 'LSST_r', 'rubin_r', 'Rubin_r', 'lsst-r', 'LSST-r', 'rubin-r', 'Rubin-r']
+wav_units = 'angstrom'
+
+['rubin/lsst/i']
+description = 'Rubin Observatory LSST i band'
+nicknames = ['lsst_i', 'LSST_i', 'rubin_i', 'Rubin_i', 'lsst-i', 'LSST-i', 'rubin-i', 'Rubin-i']
+wav_units = 'angstrom'
+
+['rubin/lsst/z']
+description = 'Rubin Observatory LSST z band'
+nicknames = ['lsst_z', 'LSST_z', 'rubin_z', 'Rubin_z', 'lsst-z', 'LSST-z', 'rubin-z', 'Rubin-z']
+wav_units = 'angstrom'
+
+['rubin/lsst/y']
+description = 'Rubin Observatory LSST y band'
+nicknames = ['lsst_y', 'LSST_y', 'rubin_y', 'Rubin_y', 'lsst-y', 'LSST-y', 'rubin-y', 'Rubin-y']
+wav_units = 'angstrom'
 
