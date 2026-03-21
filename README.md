@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://hollisakins.com/Lazy.jl/)
 
-Lazy.jl is a multithreaded photometric redshift fitting package designed for modern astronomical surveys. Built from the ground up in Julia, it provides memory-efficient and multithreaded processing of large catalogs using SED template fitting with IGM attenuation models.
+Lazy.jl is a multithreaded photometric redshift fitting package designed for modern astronomical surveys. Built from the ground up in Julia, it provides memory-efficient and multithreaded processing of large catalogs using SED template fitting with IGM attenuation models. Native multithreading scales near-linearly across cores — Lazy can fit up to ~3k obj/s on modern Apple Silicon (16 cores), or up to ~10k obj/s on enterprise chips (64 cores) — churning through catalogs of >1million objects in minutes. 
 
 ## Quick Start
 

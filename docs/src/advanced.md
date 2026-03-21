@@ -132,6 +132,10 @@ The default parameters (`cgm_A = 3.5918`, `cgm_a = 1.8414`, `cgm_c = 18.001`) ar
 
 ## Performance and Scaling
 
+### Benchmarks
+
+Typical throughput is ~3k objects/second on a Mac Studio (M2 Ultra, 16 threads) and ~10k objects/second on a 64-core cluster node (2x AMD EPYC 9335, 64 threads).
+
 ### Threading
 
 Scaling with thread count (1M objects, 10 bands, 20 templates):
