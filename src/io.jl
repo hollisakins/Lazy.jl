@@ -821,9 +821,18 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
             zgrid = read(meta, "zgrid")
             chi2grid = read(h5f["pz/chi2grid"])  # (nz, nobj)
 
-            # Convert chi2 to P(z) and normalize each column (object)
-            pz = exp.(-0.5 * chi2grid)
-            for col in 1:size(pz, 2)
+            # Convert chi2 to P(z) and normalize each column (object).
+            # Per-column shift by chi2best keeps exp() in a safe range; sentinel
+            # entries (chi2<0) must be zeroed explicitly — exp(-0.5*-1)=1.648
+            # would otherwise leak into the normalization.
+            nz_local, nobj_local = size(chi2grid)
+            pz = zeros(Float64, nz_local, nobj_local)
+            for col in 1:nobj_local
+                shift = chi2best[col] > 0 ? Float64(chi2best[col]) : 0.0
+                @inbounds for i in 1:nz_local
+                    c = Float64(chi2grid[i, col])
+                    pz[i, col] = c < 0 ? 0.0 : exp(-0.5 * (c - shift))
+                end
                 norm = trapz(zgrid, @view pz[:, col])
                 if norm > 0
                     pz[:, col] ./= norm

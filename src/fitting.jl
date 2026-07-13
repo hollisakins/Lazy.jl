@@ -990,12 +990,18 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 chi2_col = @view chunk_chi2grid[:, j]
                 store_pz = chunk_pz_grid !== nothing
 
+                # Shift by per-object min chi2 so peak pz=1: keeps total above the
+                # Float32 reciprocal threshold and avoids NaN in normalized P(z) for
+                # poorly-fit objects. chi2best<0 means failed object → falls through
+                # to the total<=0 branch below regardless of shift.
+                chi2_min = chunk_chi2best[j] > 0 ? chunk_chi2best[j] : 0.0
+
                 @inbounds begin
-                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[1]))
+                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[1]) - chi2_min))
                     cumtrapz_col[1] = 0.0
                     cpz_col[1] = pz_col[1]
                     for i in 2:nz
-                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[i]))
+                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[i]) - chi2_min))
                         cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
                         cpz_col[i] = cpz_col[i-1] + pz_col[i]
                     end
