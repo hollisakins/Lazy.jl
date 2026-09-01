@@ -1,5 +1,6 @@
 using Lazy
 using Test
+using Trapz
 
 @testset "Lazy.jl" begin
     @testset "Core functionality" begin
@@ -71,5 +72,43 @@ using Test
         @test zbest_fix == zgrid_test[3]
         @test chi2_row_fix[3] < 1e18
         @test all(chi2_row_fix[i] == Float32(1e18) for i in [1,2,4,5])
+    end
+
+    @testset "P(z) from high-chi2 grids (underflow regression)" begin
+        zgrid = collect(0.01:0.01:20.0)
+        nz = length(zgrid)
+
+        # Poor fit: min chi2 = 178 used to underflow exp(-chi2/2) and
+        # overflow Float32(1/total), producing all-NaN/Inf P(z)
+        chi2_poor = Float32.(178.0 .+ 2000.0 .* (zgrid .- 7.0) .^ 2 ./ (1 .+ zgrid))
+        pz = Lazy.chi2grid_to_pz(reshape(chi2_poor, nz, 1), zgrid)[:, 1]
+        @test all(isfinite, pz)
+        @test trapz(zgrid, pz) ≈ 1.0 atol=1e-6
+        @test argmax(pz) == argmin(chi2_poor)
+        @test all(isfinite, Float32.(pz))  # survives the Float32 output conversion
+
+        # Even chi2 in the thousands (underflows Float64 without the shift)
+        chi2_awful = Float32.(5000.0 .+ 100.0 .* (zgrid .- 10.0) .^ 2)
+        pz_awful = Lazy.chi2grid_to_pz(reshape(chi2_awful, nz, 1), zgrid)[:, 1]
+        @test all(isfinite, pz_awful)
+        @test trapz(zgrid, pz_awful) ≈ 1.0 atol=1e-6
+
+        # Shift-invariance: a good fit gives the same P(z) as the unshifted formula
+        chi2_good = Float32.(3.0 .+ 50.0 .* (zgrid .- 2.0) .^ 2)
+        pz_ref = exp.(-0.5 .* Float64.(chi2_good))
+        pz_ref ./= trapz(zgrid, pz_ref)
+        pz_good = Lazy.chi2grid_to_pz(reshape(chi2_good, nz, 1), zgrid)[:, 1]
+        @test pz_good ≈ pz_ref rtol=1e-6
+
+        # Negative chi2 is an invalid-fit sentinel: P(z) = 0 there
+        chi2_sent = copy(chi2_good)
+        chi2_sent[1:100] .= -1.0f0
+        pz_sent = Lazy.chi2grid_to_pz(reshape(chi2_sent, nz, 1), zgrid)[:, 1]
+        @test all(pz_sent[1:100] .== 0.0)
+        @test trapz(zgrid, pz_sent) ≈ 1.0 atol=1e-6
+
+        # A column with no valid chi2 stays all-zero
+        pz_none = Lazy.chi2grid_to_pz(fill(-1.0f0, nz, 2), zgrid)
+        @test all(pz_none .== 0.0)
     end
 end

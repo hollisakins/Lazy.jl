@@ -990,12 +990,25 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 chi2_col = @view chunk_chi2grid[:, j]
                 store_pz = chunk_pz_grid !== nothing
 
+                # Shift chi2 by its minimum valid value before exponentiating.
+                # The shift cancels in every normalized quantity, but without it
+                # exp(-chi2/2) underflows and 1/total overflows Float32 once
+                # min(chi2) ≳ 180, turning the stored P(z) into Inf/NaN.
+                chi2_min = Inf
+                @inbounds for i in 1:nz
+                    c = chi2_col[i]
+                    if c >= 0 && c < chi2_min
+                        chi2_min = Float64(c)
+                    end
+                end
+                isfinite(chi2_min) || (chi2_min = 0.0)
+
                 @inbounds begin
-                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[1]))
+                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[1]) - chi2_min))
                     cumtrapz_col[1] = 0.0
                     cpz_col[1] = pz_col[1]
                     for i in 2:nz
-                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * Float64(chi2_col[i]))
+                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[i]) - chi2_min))
                         cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
                         cpz_col[i] = cpz_col[i-1] + pz_col[i]
                     end
@@ -1018,11 +1031,12 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     continue
                 end
 
-                # Store normalized P(z) for HDF5 output
+                # Store normalized P(z) for HDF5 output (normalize in Float64,
+                # convert only the final value to Float32)
                 if store_pz
-                    inv_total = Float32(1.0 / total)
+                    inv_total = 1.0 / total
                     @inbounds for i in 1:nz
-                        chunk_pz_grid[i, j] = Float32(pz_col[i]) * inv_total
+                        chunk_pz_grid[i, j] = Float32(pz_col[i] * inv_total)
                     end
                 end
 
@@ -1084,16 +1098,27 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                         chunk_delta_chi2[j] = chunk_chi2best_lowz[j] - chunk_chi2best[j]
                     end
 
-                    # Lowz P(z) and CDF — reuse pz_col values already computed above
+                    # Lowz P(z) and CDF — recompute with a lowz-specific chi2
+                    # shift: the global best fit may lie outside the lowz range,
+                    # leaving the globally-shifted pz values underflowed here
                     lowz_nz = iz_lowz_max
-                    lowz_total = 0.0
+                    lowz_chi2_min = Inf
                     @inbounds for i in 1:lowz_nz
-                        lowz_total += pz_col[i]
+                        c = chi2_col[i]
+                        if c >= 0 && c < lowz_chi2_min
+                            lowz_chi2_min = Float64(c)
+                        end
                     end
-                    if lowz_total > 0
-                        cpz_col[1] = pz_col[1]
-                        @inbounds for i in 2:lowz_nz
-                            cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                    lowz_trapz_total = 0.0
+                    if isfinite(lowz_chi2_min)
+                        @inbounds begin
+                            pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[1]) - lowz_chi2_min))
+                            cpz_col[1] = pz_col[1]
+                            for i in 2:lowz_nz
+                                pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[i]) - lowz_chi2_min))
+                                lowz_trapz_total += half_dz * (pz_col[i] + pz_col[i-1])
+                                cpz_col[i] = cpz_col[i-1] + pz_col[i]
+                            end
                         end
                         lowz_cpz_norm = cpz_col[lowz_nz]
                         if lowz_cpz_norm > 0
@@ -1116,13 +1141,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     end
 
                     # Lowz P(z) grid (normalized over lowz range only)
-                    if chunk_pz_grid_lowz !== nothing
-                        lowz_trapz_total = cumtrapz_col[iz_lowz_max]
-                        if lowz_trapz_total > 0
-                            inv_lowz_trapz = Float32(1.0 / lowz_trapz_total)
-                            @inbounds for i in 1:lowz_nz
-                                chunk_pz_grid_lowz[i, j] = Float32(pz_col[i]) * inv_lowz_trapz
-                            end
+                    if chunk_pz_grid_lowz !== nothing && lowz_trapz_total > 0
+                        inv_lowz_trapz = 1.0 / lowz_trapz_total
+                        @inbounds for i in 1:lowz_nz
+                            chunk_pz_grid_lowz[i, j] = Float32(pz_col[i] * inv_lowz_trapz)
                         end
                     end
 

@@ -492,6 +492,42 @@ function check_resume_file(filename::String)
 end
 
 """
+    chi2grid_to_pz(chi2grid, zgrid)
+
+Convert a (nz, nobj) chi² grid to trapz-normalized P(z). Each column is shifted
+by its minimum valid chi² before exponentiating — the shift cancels in the
+normalization, but keeps exp(-chi²/2) from underflowing for poor fits (high
+chi²), which would otherwise leave P(z) as zeros, Inf, or NaN. Negative chi²
+values are sentinels for invalid fits and yield P(z) = 0; a column with no
+valid chi² is left as all zeros.
+"""
+function chi2grid_to_pz(chi2grid::AbstractMatrix{<:Real}, zgrid::AbstractVector{Float64})
+    nz, nobj = size(chi2grid)
+    pz = zeros(Float64, nz, nobj)
+    for col in 1:nobj
+        chi2_min = Inf
+        @inbounds for i in 1:nz
+            c = chi2grid[i, col]
+            if c >= 0 && c < chi2_min
+                chi2_min = Float64(c)
+            end
+        end
+        isfinite(chi2_min) || continue
+        @inbounds for i in 1:nz
+            c = chi2grid[i, col]
+            pz[i, col] = c < 0 ? 0.0 : exp(-0.5 * (Float64(c) - chi2_min))
+        end
+        norm = trapz(zgrid, @view pz[:, col])
+        if norm > 0
+            @inbounds for i in 1:nz
+                pz[i, col] /= norm
+            end
+        end
+    end
+    return pz
+end
+
+"""
     write_chunk_results(file::HDF5.File, chunk_start, chunk_end, ...)
 
 Write a chunk of results to an open HDF5 file handle.
@@ -540,14 +576,7 @@ function write_chunk_results(file::HDF5.File, chunk_start::Int, chunk_end::Int,
             if pz_grid !== nothing
                 file["pz/pz"][:, chunk_start:chunk_end] = pz_grid
             elseif zgrid !== nothing
-                pz_chunk = exp.(-0.5f0 .* chi2grid)
-                for col in 1:size(pz_chunk, 2)
-                    norm = trapz(zgrid, @view pz_chunk[:, col])
-                    if norm > 0
-                        pz_chunk[:, col] ./= norm
-                    end
-                end
-                file["pz/pz"][:, chunk_start:chunk_end] = pz_chunk
+                file["pz/pz"][:, chunk_start:chunk_end] = Float32.(chi2grid_to_pz(chi2grid, zgrid))
             end
         end
     end
@@ -822,13 +851,7 @@ function convert_hdf5_to_fits_python(hdf5_file::String, fits_file::String)
             chi2grid = read(h5f["pz/chi2grid"])  # (nz, nobj)
 
             # Convert chi2 to P(z) and normalize each column (object)
-            pz = exp.(-0.5 * chi2grid)
-            for col in 1:size(pz, 2)
-                norm = trapz(zgrid, @view pz[:, col])
-                if norm > 0
-                    pz[:, col] ./= norm
-                end
-            end
+            pz = chi2grid_to_pz(chi2grid, zgrid)
 
             # Format for FITS: (nobj+1, nz) with zgrid as first row
             temp_pz = vcat(transpose(zgrid), transpose(pz))
