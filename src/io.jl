@@ -515,7 +515,8 @@ function chi2grid_to_pz(chi2grid::AbstractMatrix{<:Real}, zgrid::AbstractVector{
         isfinite(chi2_min) || continue
         @inbounds for i in 1:nz
             c = chi2grid[i, col]
-            pz[i, col] = c < 0 ? 0.0 : exp(-0.5 * (Float64(c) - chi2_min))
+            # `c >= 0` (not `c < 0`) so NaN chi2 also falls to P(z) = 0
+            pz[i, col] = c >= 0 ? exp(-0.5 * (Float64(c) - chi2_min)) : 0.0
         end
         norm = trapz(zgrid, @view pz[:, col])
         if norm > 0

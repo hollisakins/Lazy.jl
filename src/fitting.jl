@@ -210,8 +210,9 @@ function fit_single_object(j::Int, fnu_j::AbstractVector{Float64}, efnu_j::Abstr
                 continue
             end
             
-            # Store chi2 for P(z) calculation
-            chi2_row[i] = chi2_j
+            # Store chi2 for P(z) calculation, clamped so the Float32
+            # conversion can't overflow to Inf for pathological fits
+            chi2_row[i] = Float32(min(chi2_j, Float64(floatmax(Float32))))
             
             # Update best fit if this is better
             if chi2_j < best_chi2
@@ -1003,12 +1004,13 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 end
                 isfinite(chi2_min) || (chi2_min = 0.0)
 
+                # `c >= 0` (not `c < 0`) so NaN chi2 also falls to P(z) = 0
                 @inbounds begin
-                    pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[1]) - chi2_min))
+                    pz_col[1] = chi2_col[1] >= 0 ? exp(-0.5 * (Float64(chi2_col[1]) - chi2_min)) : 0.0
                     cumtrapz_col[1] = 0.0
                     cpz_col[1] = pz_col[1]
                     for i in 2:nz
-                        pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[i]) - chi2_min))
+                        pz_col[i] = chi2_col[i] >= 0 ? exp(-0.5 * (Float64(chi2_col[i]) - chi2_min)) : 0.0
                         cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
                         cpz_col[i] = cpz_col[i-1] + pz_col[i]
                     end
@@ -1112,10 +1114,10 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     lowz_trapz_total = 0.0
                     if isfinite(lowz_chi2_min)
                         @inbounds begin
-                            pz_col[1] = chi2_col[1] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[1]) - lowz_chi2_min))
+                            pz_col[1] = chi2_col[1] >= 0 ? exp(-0.5 * (Float64(chi2_col[1]) - lowz_chi2_min)) : 0.0
                             cpz_col[1] = pz_col[1]
                             for i in 2:lowz_nz
-                                pz_col[i] = chi2_col[i] < 0 ? 0.0 : exp(-0.5 * (Float64(chi2_col[i]) - lowz_chi2_min))
+                                pz_col[i] = chi2_col[i] >= 0 ? exp(-0.5 * (Float64(chi2_col[i]) - lowz_chi2_min)) : 0.0
                                 lowz_trapz_total += half_dz * (pz_col[i] + pz_col[i-1])
                                 cpz_col[i] = cpz_col[i-1] + pz_col[i]
                             end

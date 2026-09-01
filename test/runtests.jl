@@ -110,5 +110,16 @@ using Trapz
         # A column with no valid chi2 stays all-zero
         pz_none = Lazy.chi2grid_to_pz(fill(-1.0f0, nz, 2), zgrid)
         @test all(pz_none .== 0.0)
+
+        # Inf/NaN chi2 (e.g. from old work files) get P(z) = 0, not NaN
+        chi2_dirty = copy(chi2_good)
+        chi2_dirty[1] = Inf32
+        chi2_dirty[2] = NaN32
+        pz_dirty = Lazy.chi2grid_to_pz(reshape(chi2_dirty, nz, 1), zgrid)[:, 1]
+        @test pz_dirty[1] == 0.0 && pz_dirty[2] == 0.0
+        @test all(isfinite, pz_dirty)
+        @test trapz(zgrid, pz_dirty) ≈ 1.0 atol=1e-6
+        pz_allinf = Lazy.chi2grid_to_pz(fill(Inf32, nz, 1), zgrid)
+        @test all(pz_allinf .== 0.0)
     end
 end
