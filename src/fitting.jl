@@ -22,6 +22,15 @@ const FLUX_ZP = Dict(
 
 const RF_MAG_NAMES = ["M_UV", "M_U", "M_V", "M_J"]
 
+# Sentinel chi2 values marking unfittable redshift bins: CHI2_POOR_FIT flags an
+# all-zero-coefficient fit, CHI2_ZFIX_FILLER fills the non-fitted bins in
+# z_spec mode. Bins at or above CHI2_PZ_MAX are excluded from P(z) like the
+# negative sentinel — before the chi2-min shift they always underflowed to
+# zero, and shifting relative to a sentinel would fabricate a flat P(z).
+const CHI2_POOR_FIT = Float32(1e10)
+const CHI2_ZFIX_FILLER = Float32(1e18)
+const CHI2_PZ_MAX = 1.0e10
+
 """
     luminosity_distance_Mpc(z, H0, Om)
 
@@ -101,7 +110,7 @@ function fit_single_object(j::Int, fnu_j::AbstractVector{Float64}, efnu_j::Abstr
 
         # Handle fixed redshift (z_spec mode)
         if z_fix_idx > 0
-            fill!(chi2_row, Float32(1e18))
+            fill!(chi2_row, CHI2_ZFIX_FILLER)
             z_range = z_fix_idx:z_fix_idx
         else
             z_range = 1:nz
@@ -185,7 +194,7 @@ function fit_single_object(j::Int, fnu_j::AbstractVector{Float64}, efnu_j::Abstr
             
             if all(x -> x ≈ 0.0, result)
                 #@warn "⚠️ All-zero coefficients detected for object $j at z=$(zgrid[i]). Poor template fit."
-                chi2_row[i] = 1e10  # High chi2 to mark as poor fit
+                chi2_row[i] = CHI2_POOR_FIT  # High chi2 to mark as poor fit
                 continue
             end
             
@@ -995,22 +1004,23 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                 # The shift cancels in every normalized quantity, but without it
                 # exp(-chi2/2) underflows and 1/total overflows Float32 once
                 # min(chi2) ≳ 180, turning the stored P(z) into Inf/NaN.
+                # Valid means 0 <= chi2 < CHI2_PZ_MAX: the chained comparison
+                # rejects the negative and high-chi2 sentinels and NaN alike.
                 chi2_min = Inf
                 @inbounds for i in 1:nz
                     c = chi2_col[i]
-                    if c >= 0 && c < chi2_min
+                    if 0 <= c < CHI2_PZ_MAX && c < chi2_min
                         chi2_min = Float64(c)
                     end
                 end
                 isfinite(chi2_min) || (chi2_min = 0.0)
 
-                # `c >= 0` (not `c < 0`) so NaN chi2 also falls to P(z) = 0
                 @inbounds begin
-                    pz_col[1] = chi2_col[1] >= 0 ? exp(-0.5 * (Float64(chi2_col[1]) - chi2_min)) : 0.0
+                    pz_col[1] = 0 <= chi2_col[1] < CHI2_PZ_MAX ? exp(-0.5 * (Float64(chi2_col[1]) - chi2_min)) : 0.0
                     cumtrapz_col[1] = 0.0
                     cpz_col[1] = pz_col[1]
                     for i in 2:nz
-                        pz_col[i] = chi2_col[i] >= 0 ? exp(-0.5 * (Float64(chi2_col[i]) - chi2_min)) : 0.0
+                        pz_col[i] = 0 <= chi2_col[i] < CHI2_PZ_MAX ? exp(-0.5 * (Float64(chi2_col[i]) - chi2_min)) : 0.0
                         cumtrapz_col[i] = cumtrapz_col[i-1] + half_dz * (pz_col[i] + pz_col[i-1])
                         cpz_col[i] = cpz_col[i-1] + pz_col[i]
                     end
@@ -1107,17 +1117,17 @@ function fit_streaming(param::Dict, templgrid::Array{Float32,3}, template_error_
                     lowz_chi2_min = Inf
                     @inbounds for i in 1:lowz_nz
                         c = chi2_col[i]
-                        if c >= 0 && c < lowz_chi2_min
+                        if 0 <= c < CHI2_PZ_MAX && c < lowz_chi2_min
                             lowz_chi2_min = Float64(c)
                         end
                     end
                     lowz_trapz_total = 0.0
                     if isfinite(lowz_chi2_min)
                         @inbounds begin
-                            pz_col[1] = chi2_col[1] >= 0 ? exp(-0.5 * (Float64(chi2_col[1]) - lowz_chi2_min)) : 0.0
+                            pz_col[1] = 0 <= chi2_col[1] < CHI2_PZ_MAX ? exp(-0.5 * (Float64(chi2_col[1]) - lowz_chi2_min)) : 0.0
                             cpz_col[1] = pz_col[1]
                             for i in 2:lowz_nz
-                                pz_col[i] = chi2_col[i] >= 0 ? exp(-0.5 * (Float64(chi2_col[i]) - lowz_chi2_min)) : 0.0
+                                pz_col[i] = 0 <= chi2_col[i] < CHI2_PZ_MAX ? exp(-0.5 * (Float64(chi2_col[i]) - lowz_chi2_min)) : 0.0
                                 lowz_trapz_total += half_dz * (pz_col[i] + pz_col[i-1])
                                 cpz_col[i] = cpz_col[i-1] + pz_col[i]
                             end

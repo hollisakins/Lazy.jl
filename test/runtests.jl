@@ -121,5 +121,25 @@ using Trapz
         @test trapz(zgrid, pz_dirty) ≈ 1.0 atol=1e-6
         pz_allinf = Lazy.chi2grid_to_pz(fill(Inf32, nz, 1), zgrid)
         @test all(pz_allinf .== 0.0)
+
+        # z_spec-mode filler (1e18) and poor-fit marker (1e10) are sentinels,
+        # not real chi2: they must not become the shift minimum. A rejected
+        # fixed-z fit (filler everywhere, -1 at the fixed bin) has no P(z).
+        chi2_zfix_rejected = fill(Lazy.CHI2_ZFIX_FILLER, nz)
+        chi2_zfix_rejected[500] = -1.0f0
+        pz_zfix = Lazy.chi2grid_to_pz(reshape(chi2_zfix_rejected, nz, 1), zgrid)[:, 1]
+        @test all(pz_zfix .== 0.0)
+
+        # A successful fixed-z fit yields a delta function at the fitted bin
+        chi2_zfix_ok = fill(Lazy.CHI2_ZFIX_FILLER, nz)
+        chi2_zfix_ok[500] = 250.0f0
+        pz_zfix_ok = Lazy.chi2grid_to_pz(reshape(chi2_zfix_ok, nz, 1), zgrid)[:, 1]
+        @test all(isfinite, pz_zfix_ok)
+        @test pz_zfix_ok[500] > 0
+        @test all(pz_zfix_ok[[1:499; 501:nz]] .== 0.0)
+
+        # All-poor-fit column (marker at every z) has no P(z)
+        pz_poor = Lazy.chi2grid_to_pz(fill(Lazy.CHI2_POOR_FIT, nz, 1), zgrid)
+        @test all(pz_poor .== 0.0)
     end
 end

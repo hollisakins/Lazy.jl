@@ -498,7 +498,8 @@ Convert a (nz, nobj) chi² grid to trapz-normalized P(z). Each column is shifted
 by its minimum valid chi² before exponentiating — the shift cancels in the
 normalization, but keeps exp(-chi²/2) from underflowing for poor fits (high
 chi²), which would otherwise leave P(z) as zeros, Inf, or NaN. Negative chi²
-values are sentinels for invalid fits and yield P(z) = 0; a column with no
+values and values at or above `CHI2_PZ_MAX` (the poor-fit and z_spec filler
+sentinels) are treated as invalid bins and yield P(z) = 0; a column with no
 valid chi² is left as all zeros.
 """
 function chi2grid_to_pz(chi2grid::AbstractMatrix{<:Real}, zgrid::AbstractVector{Float64})
@@ -508,15 +509,16 @@ function chi2grid_to_pz(chi2grid::AbstractMatrix{<:Real}, zgrid::AbstractVector{
         chi2_min = Inf
         @inbounds for i in 1:nz
             c = chi2grid[i, col]
-            if c >= 0 && c < chi2_min
+            if 0 <= c < CHI2_PZ_MAX && c < chi2_min
                 chi2_min = Float64(c)
             end
         end
         isfinite(chi2_min) || continue
         @inbounds for i in 1:nz
             c = chi2grid[i, col]
-            # `c >= 0` (not `c < 0`) so NaN chi2 also falls to P(z) = 0
-            pz[i, col] = c >= 0 ? exp(-0.5 * (Float64(c) - chi2_min)) : 0.0
+            # The chained comparison rejects the negative and high-chi2
+            # sentinels and NaN alike, all of which get P(z) = 0
+            pz[i, col] = 0 <= c < CHI2_PZ_MAX ? exp(-0.5 * (Float64(c) - chi2_min)) : 0.0
         end
         norm = trapz(zgrid, @view pz[:, col])
         if norm > 0
