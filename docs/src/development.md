@@ -10,7 +10,6 @@ src/
 ├── io.jl                # I/O operations, caching, and data management
 ├── utils.jl             # Utilities (progress bars, memory estimation, formatting)
 ├── template_grid.jl     # Template grid construction and IGM/CGM modeling
-├── writedata.py         # Python interface for FITS I/O (via PyCall)
 ├── example_params.toml  # Example parameter file (used by `lazy params`)
 ├── templates/           # SED template library
 │   └── template_directory.toml
@@ -24,7 +23,7 @@ src/
 1. **Input**: FITS catalog + TOML parameter file
 2. **Template grid construction** (`template_grid.jl`): Interpolate templates onto the redshift grid, apply IGM/CGM attenuation, integrate through filter bandpasses
 3. **Fitting** (`fitting.jl`): For each object, solve non-negative least squares at every redshift to find the best-fit template combination
-4. **Output** (`io.jl`): Write results to FITS or HDF5
+4. **Output** (`io.jl`): Write results to FITS (via CFITSIO.jl) or HDF5. Lazy.jl is pure Julia and has no Python dependency.
 
 ### Key Algorithms
 
@@ -48,7 +47,7 @@ Contributions are welcome, especially new filter transmission curves and templat
 julia --project=. -e "using Pkg; Pkg.test()"
 ```
 
-The test suite covers CLI parsing, template/filter directory integrity, CGM model physics, and spectroscopic redshift fixing.
+The test suite covers CLI parsing, template/filter directory integrity, CGM model physics, spectroscopic redshift fixing, P(z) numerics, and the HDF5 to FITS export.
 
 ## Extending Lazy.jl
 
