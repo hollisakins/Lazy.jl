@@ -1,6 +1,8 @@
 using Lazy
 using Test
 using Trapz
+using HDF5
+using FITSIO
 
 @testset "Lazy.jl" begin
     @testset "Core functionality" begin
@@ -141,5 +143,118 @@ using Trapz
         # All-poor-fit column (marker at every z) has no P(z)
         pz_poor = Lazy.chi2grid_to_pz(fill(Lazy.CHI2_POOR_FIT, nz, 1), zgrid)
         @test all(pz_poor .== 0.0)
+    end
+
+    @testset "HDF5 -> FITS export (pure-Julia CFITSIO writer)" begin
+        # Build a tiny, fully-populated work file and round-trip it through
+        # convert_hdf5_to_fits, checking the SUMMARY / PZ / TEMPL layout that
+        # downstream readers (astropy etc.) rely on.
+        mktempdir() do dir
+            work_file = joinpath(dir, "work.h5")
+            fits_file = joinpath(dir, "out.fits")
+
+            nobj, ntempl = 3, 2
+            zgrid = collect(0.0:0.5:2.0)          # nz = 5, max z = 2
+            nz = length(zgrid)
+            bands = ["f150w", "f277w"]
+            nband = length(bands)
+            templates = [joinpath(dir, "templ_a.dat"), joinpath(dir, "templ_b.fits")]
+            param = Dict{String,Any}(
+                "io" => Dict{String,Any}("output_pz" => true, "output_templates" => true),
+                "fitting" => Dict{String,Any}("use_zspec" => true),
+            )
+
+            Lazy.create_hdf5_work_file(work_file, param, nobj, nz, nband, ntempl,
+                                       bands, zgrid, templates)
+
+            ids = Int32[11, 22, 33]
+            zbest = [0.5, 1.0, 1.5]
+            coeffs = [1.0 2.0; 3.0 4.0; 5.0 6.0]        # (nobj, ntempl)
+            chi2grid = Float32[i + 10j for i in 1:nz, j in 1:nobj]  # (nz, nobj)
+            pz = Float32.(Lazy.chi2grid_to_pz(chi2grid, zgrid))
+            h5open(work_file, "r+") do f
+                f["results/ID"][:] = ids
+                f["results/zbest"][:] = zbest
+                f["results/chi2best"][:] = [1.0, 2.0, 3.0]
+                f["results/z_spec"][:] = [0.4, 1.1, -1.0]
+                for k in ["z_l95", "z_l68", "z_med", "z_u68", "z_u95"]
+                    f["results/$k"][:] = zbest
+                end
+                f["results/coeffs"][:, :] = coeffs
+                f["results/pz_gt1"][:] = Float32[0.1, 0.2, 0.3]
+                f["results/pz_gt2"][:] = Float32[0.0, 0.0, 0.0]
+                f["results/Sz"][:] = [0.9, 0.8, 0.7]
+                for bc in 0:2
+                    f["results/Pz$bc"][:] = Float32[bc, bc, bc]
+                end
+                f["results/Pz_cen"][:] = Float32[0.5, 0.6, 0.7]
+                f["results/Pz_zgtrzb2"][:] = Float32[0.05, 0.06, 0.07]
+                f["photometry/f150w"][:] = [10.0, 20.0, 30.0]
+                f["photometry/f277w"][:] = [11.0, 21.0, 31.0]
+                f["pz/chi2grid"][:, :] = chi2grid
+                f["pz/pz"][:, :] = pz
+            end
+
+            wav = collect(1000.0:500.0:3000.0)        # nwav = 5
+            nwav = length(wav)
+            templgrid = zeros(Float32, nwav, ntempl, nz)
+            for t in 1:ntempl, iz in 1:nz
+                templgrid[:, t, iz] .= Float32.(100t .+ iz .+ (1:nwav) ./ 10)
+            end
+            Lazy.write_template_data(work_file, templgrid, wav, zgrid, templates)
+            Lazy.finalize_hdf5_work_file(work_file)
+
+            Lazy.convert_hdf5_to_fits(work_file, fits_file; chunk_size=2)
+            @test isfile(fits_file)
+
+            FITS(fits_file, "r") do ff
+                @test length(ff) == 4  # primary + SUMMARY + PZ + TEMPL
+                @test read_key(ff[2], "EXTNAME")[1] == "SUMMARY"
+                @test read_key(ff[3], "EXTNAME")[1] == "PZ"
+                @test read_key(ff[4], "EXTNAME")[1] == "TEMPL"
+
+                # ── SUMMARY ──
+                summ = ff[2]
+                cols = FITSIO.colnames(summ)
+                @test cols[1:4] == ["ID", "z_best", "chi2", "z_spec"]
+                for c in ["z_l95", "z_l68", "z_med", "z_u68", "z_u95", "Pz_gt1", "Pz_gt2",
+                          "Sz", "Pz0", "Pz1", "Pz2", "Pz_cen", "Pz_zgtrzb2",
+                          "f150w", "f277w", "coeffs"]
+                    @test c in cols
+                end
+                @test read(summ, "ID") == Int64.(ids)
+                @test read(summ, "z_best") == Float32.(zbest)
+                @test read(summ, "z_spec") == Float32[0.4, 1.1, -1.0]
+                @test read(summ, "Pz_gt1") == Float32[0.1, 0.2, 0.3]
+                @test read(summ, "Pz2") == Float32[2, 2, 2]
+                @test read(summ, "f277w") == Float32[11, 21, 31]
+                # coeffs is an ntempl-wide vector column: FITSIO returns (ntempl, nobj)
+                @test read(summ, "coeffs") == Float32.(permutedims(coeffs))
+                iband = findfirst(==("f150w"), cols)
+                @test read_key(summ, "TUNIT$iband")[1] == "fnu"
+                icoef = findfirst(==("coeffs"), cols)
+                @test read_key(summ, "TFORM$icoef")[1] == "$(ntempl)E"
+
+                # ── PZ: sentinel row (ID=-1, zgrid) followed by one row per object ──
+                pzh = ff[3]
+                @test FITSIO.colnames(pzh) == ["ID", "Pz"]
+                @test read(pzh, "ID") == vcat(Int64[-1], Int64.(ids))
+                pz_out = read(pzh, "Pz")                # (nz, nobj+1)
+                @test size(pz_out) == (nz, nobj + 1)
+                @test pz_out[:, 1] == Float32.(zgrid)
+                @test pz_out[:, 2:end] == pz
+
+                # ── TEMPL: sentinel row (z=-1, wavelength) followed by one row per z ──
+                th = ff[4]
+                @test FITSIO.colnames(th) == ["z", "templ_a", "templ_b"]
+                @test read(th, "z") == vcat(Float32[-1], Float32.(zgrid))
+                ta = read(th, "templ_a")               # (nwav, nz+1)
+                @test size(ta) == (nwav, nz + 1)
+                @test ta[:, 1] == Float32.(wav)
+                @test ta[:, 2:end] == templgrid[:, 1, :]
+                tb = read(th, "templ_b")
+                @test tb[:, 2:end] == templgrid[:, 2, :]
+            end
+        end
     end
 end

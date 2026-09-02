@@ -80,6 +80,6 @@ Required sections:
 - Graceful handling of missing data and insufficient photometry
 - Validation of parameter files and data integrity
 
-## Python Integration
-- Uses PyCall.jl to interface with astropy for FITS I/O via `src/writedata.py`
-- Python dependencies automatically managed through Conda.jl
+## FITS I/O
+- Input catalogs are read with FITSIO.jl; output FITS files are written with CFITSIO.jl (`convert_hdf5_to_fits()` in `src/io.jl`)
+- Pure Julia: no Python, PyCall, or Conda dependency. PyCall was removed because its GIL-less finalizers segfault under Julia multithreading (see issue #13)
