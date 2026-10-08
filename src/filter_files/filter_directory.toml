@@ -281,6 +281,16 @@ description = 'HST ACS F435W downloaded from SVO filter profile service'
 nicknames = ['f435w','F435W','HST_F435W','hst_f435w','HST-F435W','hst-f435w', 'HST_ACS_F435W', 'hst_acs_f435w', 'HST-ACS-F435W', 'hst-acs-f435w']
 wav_units = 'angstrom'
 
+['hst/acs/f475w']
+description = 'HST ACS F475W downloaded from SVO filter profile service'
+nicknames = ['f475w', 'F475W', 'HST_F475W', 'hst_f475w', 'HST-F475W', 'hst-f475w', 'HST_ACS_F475W', 'hst_acs_f475w', 'HST-ACS-F475W', 'hst-acs-f475w']
+wav_units = 'angstrom'
+
+['hst/wfc3/f110w']
+description = 'HST WFC3 F110W downloaded from SVO filter profile service'
+nicknames = ['f110w', 'F110W', 'HST_F110W', 'hst_f110w', 'HST-F110W', 'hst-f110w', 'HST_WFC3_F110W', 'hst_wfc3_f110w', 'HST-WFC3-F110W', 'hst-wfc3-f110w']
+wav_units = 'angstrom'
+
 ['hst/acs/f606w']
 description = 'HST ACS F606W downloaded from SVO filter profile service'
 nicknames = ['f606w','F606W','HST_F606W','hst_f606w','HST-F606W','hst-f606w', 'HST_ACS_F606W', 'hst_acs_f606w', 'HST-ACS-F606W', 'hst-acs-f606w']
